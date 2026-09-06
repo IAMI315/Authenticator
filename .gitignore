@@ -1,0 +1,43 @@
+# Local encrypted vaults, device credentials, backups and runtime settings.
+Authenticator-PC-Python/data/
+Authenticator-PC-Python/release/data/
+**/vault.json
+**/device.key
+**/settings.json
+**/*.authbak
+*.key
+*.pem
+*.pfx
+*.p12
+.env
+.env.*
+
+# Runtime logs and local diagnostics.
+*.log
+debug.log
+
+# PC Python build and test artifacts.
+Authenticator-PC-Python/.venv-build/
+Authenticator-PC-Python/.pytest_cache/
+Authenticator-PC-Python/.mypy_cache/
+Authenticator-PC-Python/.ruff_cache/
+Authenticator-PC-Python/__pycache__/
+Authenticator-PC-Python/**/__pycache__/
+Authenticator-PC-Python/build/
+Authenticator-PC-Python/release/
+*.py[cod]
+
+# Android machine-local and generated artifacts.
+Authenticator-Mobile-Android/.gradle/
+Authenticator-Mobile-Android/.kotlin/
+Authenticator-Mobile-Android/.idea/
+Authenticator-Mobile-Android/local.properties
+Authenticator-Mobile-Android/app/build/
+Authenticator-Mobile-Android/build/
+Authenticator-Mobile-Android/release/
+Authenticator-Mobile-Android/.pytest_cache/
+
+# OS metadata.
+Thumbs.db
+Desktop.ini
+.DS_Store

@@ -1,0 +1,4 @@
+cryptography>=42,<50
+Pillow>=10,<13
+pyinstaller>=6,<7
+zxing-cpp>=2,<3
