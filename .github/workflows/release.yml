@@ -38,7 +38,7 @@ jobs:
           cache-dependency-path: Authenticator-PC-Python/frontend/package-lock.json
 
       - name: Install Python dependencies
-        run: python -m pip install --upgrade pip; python -m pip install -r requirements.txt
+        run: python -m pip install --upgrade pip; python -m pip install -r requirements.txt pytest ruff mypy
 
       - name: Install frontend dependencies from lockfile
         working-directory: Authenticator-PC-Python/frontend
