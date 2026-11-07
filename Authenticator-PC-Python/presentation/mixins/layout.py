@@ -6,7 +6,7 @@ import tkinter as tk
 from tkinter import ttk
 from typing import Any
 
-from infrastructure.paths import resource_path
+from presentation.application_icon import set_window_icon
 from presentation.canvas_table import CanvasDataTable, ColumnSpec, RowAction
 from presentation.constants import APP_NAME
 from presentation.dashboard_widgets import DashboardStatsView
@@ -34,12 +34,7 @@ class LayoutMixin(WindowMixin):
         configure_app_style(self, self.dpi_context)
 
     def _set_icon(self) -> None:
-        self.icon_image: tk.PhotoImage | None
-        try:
-            self.icon_image = tk.PhotoImage(file=str(resource_path("assets/icon.png")))
-            self.iconphoto(True, self.icon_image)
-        except tk.TclError:
-            self.icon_image = None
+        set_window_icon(self, default=True)
 
     def _build_menu(self) -> None:
         """Create only popup menus; the native application menu bar is intentionally removed."""
@@ -63,7 +58,6 @@ class LayoutMixin(WindowMixin):
         self.more_menu.add_separator()
         self.more_menu.add_command(label="本机 API 说明", command=self.show_api_help)
         self.more_menu.add_command(label="关于", command=self.show_about)
-        self.more_menu.add_separator()
         self.more_menu.add_command(label="退出", command=self._shutdown)
 
         self.otp_action_menu = tk.Menu(self, **menu_options)
@@ -150,7 +144,7 @@ class LayoutMixin(WindowMixin):
         brand = ttk.Frame(header, style="Header.TFrame")
         brand.grid(row=0, column=0, sticky="w")
         self.header_brand = brand
-        brand_icon = self.icons.image("shield-check", 38, "#2563EB")
+        brand_icon = self.icons.image("app", 38)
         self._toolbar_images.append(brand_icon)
         self.brand_icon_label = ttk.Label(brand, image=brand_icon, style="HeaderIcon.TLabel")
         self.brand_icon_label.grid(row=0, column=0, rowspan=2, padx=(0, 10))
@@ -220,6 +214,7 @@ class LayoutMixin(WindowMixin):
         content.grid(row=0, column=1, sticky="nsew")
         content.columnconfigure(0, weight=1)
         content.rowconfigure(1, weight=1)
+        self.content_frame = content
         self.stats_view = DashboardStatsView(content, self.icons)
         self.stats_view.grid(row=0, column=0, sticky="ew", pady=(0, 10))
 
@@ -227,6 +222,7 @@ class LayoutMixin(WindowMixin):
         workspace_host.grid(row=1, column=0, sticky="nsew")
         workspace_host.columnconfigure(0, weight=1)
         workspace_host.rowconfigure(0, weight=1)
+        self.workspace_host = workspace_host
         self.otp_workspace = ttk.Frame(workspace_host, style="App.TFrame")
         self.otp_workspace.grid(row=0, column=0, sticky="nsew")
         self.otp_workspace.columnconfigure(0, weight=1)
@@ -426,7 +422,7 @@ class LayoutMixin(WindowMixin):
             self.main_view_model.set_scope(scope)
             self.active_group_id = getattr(scope, "group_id", None)
             self.refresh_tree()
-        else:
+        elif self.module_coordinator.active == "passwords":
             self.password_controller.select_scope(scope)
             self._refresh_dashboard_shell()
 
@@ -442,6 +438,8 @@ class LayoutMixin(WindowMixin):
         self._responsive_debouncer.trigger()
 
     def _apply_responsive_layout(self) -> None:
+        if self._mui_surface_active():
+            return
         if self.dpi_context.refresh_for_window(self):
             self._refresh_dpi_resources()
         width = max(self.dpi_context.logical_px(self.winfo_width()), 1)
@@ -497,10 +495,11 @@ class LayoutMixin(WindowMixin):
         self._update_vault_lock_button()
 
     def _refresh_dpi_resources(self) -> None:
+        self._set_icon()
         configure_app_style(self, self.dpi_context)
         self.icons.invalidate_scale()
         self._toolbar_images.clear()
-        brand_icon = self.icons.image("shield-check", 38, "#2563EB")
+        brand_icon = self.icons.image("app", 38)
         self._toolbar_images.append(brand_icon)
         self.brand_icon_label.configure(image=brand_icon)
         buttons = list(self.toolbar_buttons.values()) + [self.more_button]
@@ -537,7 +536,7 @@ class LayoutMixin(WindowMixin):
             self.sidebar.set_query_variable(self.search_var)
             self.sidebar.set_items(self.main_view_model.navigation_items(), self.main_view_model.scope)
             self.stats_view.set_otp(self.main_view_model.dashboard_stats())
-        else:
+        elif self.module_coordinator.active == "passwords":
             self.sidebar.set_query_variable(self.password_workspace.query_var)
             self.sidebar.set_items(self.password_view_model.navigation_items(), self.password_view_model.scope)
             self.stats_view.set_passwords(self.password_view_model.dashboard_stats())

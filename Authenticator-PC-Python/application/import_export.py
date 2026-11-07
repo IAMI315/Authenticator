@@ -13,6 +13,7 @@ from domain.google_authenticator import (
 )
 from domain.migrations import migrate_legacy_star_records
 from domain.passwords import PasswordEntry, PasswordGroup
+from domain.servers import ServerProfile
 
 
 @dataclass(frozen=True)
@@ -21,6 +22,7 @@ class ImportBundle:
     otp_groups: list[AccountGroup] = field(default_factory=list)
     password_entries: list[PasswordEntry] = field(default_factory=list)
     password_groups: list[PasswordGroup] = field(default_factory=list)
+    server_profiles: list[ServerProfile] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
 
@@ -91,11 +93,13 @@ def parse_import_text(text: str) -> ImportBundle:
     raw_groups: list[Any] = []
     raw_password_entries: list[Any] = []
     raw_password_groups: list[Any] = []
+    raw_server_profiles: list[Any] = []
     if isinstance(document, list):
         raw_entries = document
     elif isinstance(document, dict) and (
         isinstance(document.get("entries"), list)
         or isinstance(document.get("password_entries"), list)
+        or isinstance(document.get("server_profiles"), list)
     ):
         raw_entries = document.get("entries", []) if isinstance(document.get("entries"), list) else []
         raw_groups = document.get("groups", []) if isinstance(document.get("groups"), list) else []
@@ -104,6 +108,9 @@ def parse_import_text(text: str) -> ImportBundle:
         )
         raw_password_groups = (
             document.get("password_groups", []) if isinstance(document.get("password_groups"), list) else []
+        )
+        raw_server_profiles = (
+            document.get("server_profiles", []) if isinstance(document.get("server_profiles"), list) else []
         )
     elif isinstance(document, dict) and "secret" in document:
         raw_entries = [document]
@@ -116,6 +123,7 @@ def parse_import_text(text: str) -> ImportBundle:
     groups: list[AccountGroup] = []
     password_entries: list[PasswordEntry] = []
     password_groups: list[PasswordGroup] = []
+    server_profiles: list[ServerProfile] = []
     warnings: list[str] = []
     seen_group_ids: set[str] = set()
     seen_group_names: set[str] = set()
@@ -170,6 +178,20 @@ def parse_import_text(text: str) -> ImportBundle:
             password_entries.append(PasswordEntry.from_dict(raw_entry))
         except (TypeError, ValueError):
             warnings.append(f"第 {position} 条密码记录无效")
-    if not entries and not password_entries:
-        raise ValueError("备份中没有可用账号或密码记录")
-    return ImportBundle(entries, groups, password_entries, password_groups, warnings)
+    seen_server_ids: set[str] = set()
+    seen_server_identities: set[tuple[str, str, int, str]] = set()
+    for position, raw_profile in enumerate(raw_server_profiles, start=1):
+        try:
+            profile = ServerProfile.from_dict(raw_profile)
+        except (TypeError, ValueError):
+            warnings.append(f"第 {position} 个服务器记录无效")
+            continue
+        if profile.id in seen_server_ids or profile.connection_identity in seen_server_identities:
+            warnings.append(f"第 {position} 个服务器记录重复")
+            continue
+        seen_server_ids.add(profile.id)
+        seen_server_identities.add(profile.connection_identity)
+        server_profiles.append(profile)
+    if not entries and not password_entries and not server_profiles:
+        raise ValueError("备份中没有可用账号、密码或服务器记录")
+    return ImportBundle(entries, groups, password_entries, password_groups, server_profiles, warnings)

@@ -176,7 +176,31 @@ class ApiService:
                 }
             }
 
+        if action == "get_code":
+            entry, failure = self.find_entry(payload)
+            if failure:
+                return failure
+            assert entry is not None
+            try:
+                code = entry.code()
+            except ValueError as error:
+                return 422, {"error": "invalid_account_secret", "message": str(error)}
+            return 200, {
+                "account": self.account_metadata(entry),
+                "code": code,
+                "remaining_seconds": entry.remaining_seconds(),
+            }
+
         if action == "create_account":
             return self._create_account(payload)
+
+        if action == "scan_add":
+            group_ids = normalise_group_ids(payload.get("group_ids", payload.get("groups")))
+            unknown_group_ids = [
+                group_id for group_id in group_ids if self.vault.group_by_id(group_id) is None
+            ]
+            if unknown_group_ids:
+                return 400, {"error": "unknown_group_ids", "group_ids": unknown_group_ids}
+            return 200, {"group_ids": group_ids}
 
         return 500, {"error": "unknown_api_action"}

@@ -25,6 +25,11 @@ Authenticator-PC-Python/__pycache__/
 Authenticator-PC-Python/**/__pycache__/
 Authenticator-PC-Python/build/
 Authenticator-PC-Python/release/
+Authenticator-PC-Python/frontend/node_modules/
+Authenticator-PC-Python/frontend/dist/
+Authenticator-PC-Python/frontend/.vite/
+Authenticator-PC-Python/frontend/**/*.tsbuildinfo
+temp/
 *.py[cod]
 
 # Android machine-local and generated artifacts.
@@ -36,6 +41,7 @@ Authenticator-Mobile-Android/app/build/
 Authenticator-Mobile-Android/build/
 Authenticator-Mobile-Android/release/
 Authenticator-Mobile-Android/.pytest_cache/
+Authenticator-Mobile-Android/.build-tools/
 
 # OS metadata.
 Thumbs.db

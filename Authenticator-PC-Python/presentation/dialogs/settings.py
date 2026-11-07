@@ -18,6 +18,8 @@ class SettingsDialog(tk.Toplevel):
         self,
         parent: Any,
         autolock_minutes: int,
+        otp_codes_visible: bool,
+        passwords_visible: bool,
         data_directory: Path,
         api_endpoint: str,
         api_token: str,
@@ -26,7 +28,7 @@ class SettingsDialog(tk.Toplevel):
         """构建设置表单；API 令牌只提供复制功能，不能在此处手工修改。"""
 
         super().__init__(parent)
-        self.result: int | None = None
+        self.result: tuple[int, bool, bool] | None = None
         self.title("设置")
         self.resizable(False, False)
         self.transient(parent)
@@ -38,21 +40,25 @@ class SettingsDialog(tk.Toplevel):
         ttk.Label(frame, text="闲置多久后自动锁定（分钟）", style="Form.TLabel").grid(row=0, column=0, sticky="w", pady=6)
         self.autolock_var = tk.StringVar(value=str(autolock_minutes))
         ttk.Spinbox(frame, from_=0, to=1_440, textvariable=self.autolock_var, width=12).grid(row=0, column=1, sticky="w", pady=6)
+        self.otp_codes_visible_var = tk.BooleanVar(value=otp_codes_visible)
+        self.passwords_visible_var = tk.BooleanVar(value=passwords_visible)
+        ttk.Checkbutton(frame, text="默认显示验证码", variable=self.otp_codes_visible_var).grid(row=1, column=0, columnspan=2, sticky="w", pady=5)
+        ttk.Checkbutton(frame, text="默认显示密码本密码", variable=self.passwords_visible_var).grid(row=2, column=0, columnspan=2, sticky="w", pady=5)
         ttk.Label(
             frame,
             text=f"本地保险库目录：\n{data_directory}",
             style="DialogMuted.TLabel",
             justify="left",
             wraplength=440,
-        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(16, 0))
+        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(16, 0))
 
-        ttk.Separator(frame, orient="horizontal").grid(row=2, column=0, columnspan=2, sticky="ew", pady=(18, 12))
+        ttk.Separator(frame, orient="horizontal").grid(row=4, column=0, columnspan=2, sticky="ew", pady=(18, 12))
         ttk.Label(frame, text="本机 API", style="Form.TLabel", font=(UI_FONT, 10, "bold")).grid(
-            row=3, column=0, columnspan=2, sticky="w"
+            row=5, column=0, columnspan=2, sticky="w"
         )
-        ttk.Label(frame, text="服务地址", style="DialogMuted.TLabel").grid(row=4, column=0, sticky="w", pady=(8, 5))
+        ttk.Label(frame, text="服务地址", style="DialogMuted.TLabel").grid(row=6, column=0, sticky="w", pady=(8, 5))
         endpoint_row = ttk.Frame(frame, style="Dialog.TFrame")
-        endpoint_row.grid(row=4, column=1, sticky="ew", pady=(8, 5))
+        endpoint_row.grid(row=6, column=1, sticky="ew", pady=(8, 5))
         endpoint_row.columnconfigure(0, weight=1)
         endpoint_var = tk.StringVar(value=api_endpoint)
         endpoint_entry = ttk.Entry(endpoint_row, textvariable=endpoint_var, state="readonly", width=42)
@@ -64,9 +70,9 @@ class SettingsDialog(tk.Toplevel):
             style="Secondary.TButton",
             width=5,
         ).grid(row=0, column=1, padx=(8, 0))
-        ttk.Label(frame, text="访问令牌", style="DialogMuted.TLabel").grid(row=5, column=0, sticky="w", pady=5)
+        ttk.Label(frame, text="访问令牌", style="DialogMuted.TLabel").grid(row=7, column=0, sticky="w", pady=5)
         token_row = ttk.Frame(frame, style="Dialog.TFrame")
-        token_row.grid(row=5, column=1, sticky="ew", pady=5)
+        token_row.grid(row=7, column=1, sticky="ew", pady=5)
         token_row.columnconfigure(0, weight=1)
         token_var = tk.StringVar(value=api_token)
         token_entry = ttk.Entry(token_row, textvariable=token_var, state="readonly", width=42)
@@ -84,9 +90,9 @@ class SettingsDialog(tk.Toplevel):
             style="DialogMuted.TLabel",
             justify="left",
             wraplength=500,
-        ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(7, 0))
+        ).grid(row=8, column=0, columnspan=2, sticky="w", pady=(7, 0))
         button_row = ttk.Frame(frame, style="Dialog.TFrame")
-        button_row.grid(row=7, column=0, columnspan=2, sticky="e", pady=(20, 0))
+        button_row.grid(row=9, column=0, columnspan=2, sticky="e", pady=(20, 0))
         ttk.Button(button_row, text="取消", command=self.cancel, style="Secondary.TButton").grid(row=0, column=0, padx=(0, 8))
         ttk.Button(button_row, text="保存", command=self.submit, style="Primary.TButton").grid(row=0, column=1)
         self.bind("<Return>", lambda _event: self.submit())
@@ -105,7 +111,7 @@ class SettingsDialog(tk.Toplevel):
         except ValueError:
             messagebox.showwarning(APP_NAME, "请输入 0 到 1440 之间的整数。", parent=self)
             return
-        self.result = value
+        self.result = (value, self.otp_codes_visible_var.get(), self.passwords_visible_var.get())
         self.destroy()
 
     def cancel(self) -> None:
@@ -124,13 +130,15 @@ class SettingsDialog(tk.Toplevel):
         cls,
         parent: Any,
         autolock_minutes: int,
+        otp_codes_visible: bool,
+        passwords_visible: bool,
         data_directory: Path,
         api_endpoint: str,
         api_token: str,
         api_status: str,
-    ) -> int | None:
+    ) -> tuple[int, bool, bool] | None:
         """显示模态设置对话框并返回确认的自动锁定分钟数或 ``None``。"""
 
-        dialog = cls(parent, autolock_minutes, data_directory, api_endpoint, api_token, api_status)
+        dialog = cls(parent, autolock_minutes, otp_codes_visible, passwords_visible, data_directory, api_endpoint, api_token, api_status)
         parent.wait_window(dialog)
         return dialog.result

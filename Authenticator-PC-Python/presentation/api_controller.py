@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import queue
 from collections.abc import Callable
+from typing import Any
 
 from infrastructure.api_server import ApiRequest, LocalApiServer
 from infrastructure.api_service import ApiService
@@ -21,12 +22,16 @@ class ApiController:
         api_service: ApiService,
         token: str,
         on_error: Callable[[str], None] | None = None,
+        scan_request_handler: Callable[[dict[str, Any], Callable[[tuple[int, dict[str, Any]]], None]], bool] | None = None,
+        scan_canceller: Callable[[], None] | None = None,
     ) -> None:
         """保存服务、令牌和可选错误回调，并创建跨线程请求队列。"""
 
         self.api_service = api_service
         self.token = token
         self.on_error = on_error
+        self.scan_request_handler = scan_request_handler
+        self.scan_canceller = scan_canceller
         self.requests: queue.Queue[ApiRequest] = queue.Queue()
         self.server: LocalApiServer | None = None
         self.error: str | None = None
@@ -72,8 +77,14 @@ class ApiController:
             except queue.Empty:
                 break
             try:
-                # 单个 API 处理错误不应中断后续请求；HTTP 侧只获得通用错误对象。
-                response = self.api_service.handle(request.action, request.payload)
+                if request.action == "scan_add":
+                    response = self._start_scan(request)
+                    if response is None:
+                        processed += 1
+                        continue
+                else:
+                    # 单个 API 处理错误不应中断后续请求；HTTP 侧只获得通用错误对象。
+                    response = self.api_service.handle(request.action, request.payload)
             except Exception:
                 response = (500, {"error": "internal_error"})
             try:
@@ -83,9 +94,32 @@ class ApiController:
             processed += 1
         return processed
 
+    def _start_scan(self, request: ApiRequest) -> tuple[int, dict[str, Any]] | None:
+        """预检后启动异步扫码；成功启动时由完成回调写回 HTTP 响应。"""
+
+        preflight = self.api_service.handle(request.action, request.payload)
+        if preflight[0] != 200:
+            return preflight
+        if self.scan_request_handler is None:
+            return 501, {"error": "scan_api_unavailable"}
+        payload = dict(request.payload)
+        payload["group_ids"] = preflight[1]["group_ids"]
+
+        def complete(response: tuple[int, dict[str, Any]]) -> None:
+            try:
+                request.response.put_nowait(response)
+            except queue.Full:
+                pass
+
+        if not self.scan_request_handler(payload, complete):
+            return 409, {"error": "scan_in_progress"}
+        return None
+
     def stop(self) -> None:
         """停止本机 HTTP 服务并清空服务器引用，窗口关闭时调用。"""
 
+        if self.scan_canceller is not None:
+            self.scan_canceller()
         if self.server is not None:
             self.server.stop()
         self.server = None

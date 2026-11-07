@@ -96,7 +96,11 @@ class IconRegistry:
             if provider_name
             else Path()
         )
-        if action_path.exists():
+        if key == "app":
+            source_path = resource_path("assets/icon.png")
+            color = ""
+            cache_key = ("application", pixel_size, color)
+        elif action_path.exists():
             source_path = action_path
             color = tint or "#334155"
             cache_key = (f"action:{action_name}", pixel_size, color)
@@ -120,7 +124,7 @@ class IconRegistry:
             return cached
         with Image.open(source_path) as source:
             rgba = source.convert("RGBA").resize((pixel_size, pixel_size), Image.Resampling.LANCZOS)
-        colored = self._tint(rgba, color)
+        colored = self._tint(rgba, color) if color else rgba
         image = ImageTk.PhotoImage(colored, master=self.root)
         self._cache[cache_key] = image
         return image

@@ -70,7 +70,7 @@ class BackupService:
         return parse_import_text(content)
 
     def export_encrypted(self, path: str, vault: Any) -> None:
-        payload = self._payload(vault)
+        payload = self._payload(vault, include_server_secrets=True)
         document = self.codec.encrypt(
             payload,
             key_id=self.key_source.key_id,
@@ -80,13 +80,13 @@ class BackupService:
         self.files.write_document(path, document)
 
     def export_plain(self, path: str, vault: Any) -> None:
-        self.files.write_document(path, {**self._payload(vault), "encrypted": False})
+        self.files.write_document(path, {**self._payload(vault, include_server_secrets=False), "encrypted": False})
 
     def export_uris(self, path: str, entries: Any) -> None:
         content = "\n".join(entry.to_uri() for entry in entries) + "\n"
         self.files.write_text(path, content)
 
-    def _payload(self, vault: Any) -> dict[str, Any]:
+    def _payload(self, vault: Any, *, include_server_secrets: bool) -> dict[str, Any]:
         return {
             "format": "authenticator-desktop/v1",
             "version": 1,
@@ -95,4 +95,8 @@ class BackupService:
             "groups": [group.to_dict() for group in vault.groups],
             "password_entries": [entry.to_dict() for entry in vault.password_entries],
             "password_groups": [group.to_dict() for group in vault.password_groups],
+            "server_profiles": [
+                profile.to_dict() if include_server_secrets else profile.to_plain_backup_dict()
+                for profile in vault.server_profiles
+            ],
         }

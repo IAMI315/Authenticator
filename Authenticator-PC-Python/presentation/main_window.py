@@ -19,7 +19,9 @@ from application.import_service import ImportService
 from application.password_group_service import PasswordGroupService
 from application.password_search_service import PasswordSearchService
 from application.password_service import PasswordService
+from application.qr_import_service import QrImportService
 from application.search_service import SearchService
+from application.server_service import ServerService
 from application.sorting import parse_otp_sort, parse_password_sort
 from application.storage_service import StorageService
 from domain.entities import DEFAULT_GROUP_NAME, MAX_GROUP_NAME_LENGTH, OTPEntry
@@ -33,10 +35,12 @@ from infrastructure.qr_scanner import QrScanner
 from infrastructure.secure_storage import StorageLoadKind
 from infrastructure.settings_repository import JsonSettingsRepository
 from infrastructure.settings_store import SettingsStore
+from infrastructure.ssh_sessions import SshSessionManager
 from infrastructure.task_runner import BackgroundTaskRunner
 from infrastructure.vault_repository import JsonVaultRepository
 from infrastructure.vault_store import Vault
 from presentation.api_controller import ApiController
+from presentation.api_scan_coordinator import ApiScanCoordinator
 from presentation.compact_window import CompactWindow
 from presentation.constants import (
     ALL_ACCOUNTS_LABEL,
@@ -55,6 +59,7 @@ from presentation.mixins import (
     VaultControlsMixin,
 )
 from presentation.module_coordinator import ModuleCoordinator
+from presentation.mui.workspace import MuiWorkspace
 from presentation.password_controller import PasswordController
 from presentation.scheduling import TrailingDebouncer
 from presentation.view_models import (
@@ -83,7 +88,12 @@ class MainWindow(
     ``main_view_model``、``background_tasks`` 和 ``api_controller``。
     """
 
-    def __init__(self, data_directory: Path | None = None, dpi_context: DpiContext | None = None) -> None:
+    def __init__(
+        self,
+        data_directory: Path | None = None,
+        dpi_context: DpiContext | None = None,
+        mui_enabled: bool | None = None,
+    ) -> None:
         """装配持久化、领域服务、视图模型与 Tk 控件，并安排首次异步加载。"""
 
         super().__init__()
@@ -92,6 +102,10 @@ class MainWindow(
         self.title(APP_NAME)
         # 基础设施对象：路径、保险库、设置、扫码和后台线程均在此处集中创建。
         self.data_directory = data_directory or application_data_directory()
+        # Temporary test and screenshot vaults retain the deterministic native
+        # UI. Production starts MUI by default unless ``--classic-ui`` opts out.
+        self._mui_requested = data_directory is None if mui_enabled is None else bool(mui_enabled)
+        self.mui_workspace: MuiWorkspace | None = None
         self.data_directory.mkdir(parents=True, exist_ok=True)
         self.vault_repository = JsonVaultRepository(self.data_directory / "vault.json", Vault)
         self.vault = self.vault_repository.create()
@@ -125,6 +139,8 @@ class MainWindow(
             self.password_group_service,
             self.password_view_model,
         )
+        self.server_service = ServerService(self.vault, self._persist_vault)
+        self.ssh_sessions = SshSessionManager()
         self.module_coordinator = ModuleCoordinator(self, self.password_controller)
         self.vault_service = StorageService(self.vault, self.vault_repository)
         self.import_service = ImportService(
@@ -132,6 +148,7 @@ class MainWindow(
             self._persist_vault,
             utc_now_iso,
         )
+        self.qr_import_service = QrImportService(self.vault, self.import_service)
         self.group_service = GroupService(
             self.vault,
             self._persist_vault,
@@ -197,6 +214,7 @@ class MainWindow(
             refresh_callback=self.refresh_tree,
             status_callback=self._show_status,
         )
+        self.api_scan_coordinator = ApiScanCoordinator(self, self.qr_import_service)
         # API 必须等安全设置解密完成后才取得令牌并启动。
         self.api_token = ""
         self.api_controller: ApiController | None = None
@@ -208,6 +226,8 @@ class MainWindow(
         self._build_menu()
         self._build_widgets()
         self._update_topmost_button()
+        if self._mui_requested:
+            self.after_idle(self._initialize_mui_workspace)
         if self.settings.compact_mode:
             self.after_idle(lambda: self.set_compact_mode(True))
         self.search_var.trace_add("write", self._schedule_search)
@@ -219,3 +239,69 @@ class MainWindow(
         self.after(50, self._process_api_requests)
         self.after(50, self._process_background_tasks)
         self.after(1_000, self._tick)
+
+    def _initialize_mui_workspace(self) -> None:
+        """Mount the bundled MUI UI, retaining classic Tk as a safe fallback."""
+
+        if self._closing or self.mui_workspace is not None:
+            return
+        try:
+            self.mui_workspace = MuiWorkspace(self, self)
+            self._set_classic_chrome_visible(False)
+            self.mui_workspace.activate()
+            # Creating an Edge profile and loading React is the expensive part
+            # of the first compact switch. Prewarm it after the full window is
+            # usable, then keep it paused and hidden until it is requested.
+            self.after(1_200, self._prewarm_compact_workspace)
+        except Exception as error:
+            self.mui_workspace = None
+            self._set_classic_chrome_visible(True)
+            self._show_status(f"MUI 界面不可用，已使用经典界面：{error}", clear_after=10_000)
+
+    def _prewarm_compact_workspace(self) -> None:
+        """Prepare the compact MUI surface without showing a second window."""
+
+        if (
+            self._closing
+            or self.compact_mode
+            or self.compact_window is not None
+            or self.mui_workspace is None
+            or not self._mui_requested
+        ):
+            return
+        try:
+            self.compact_window = CompactWindow(self, start_hidden=True)
+        except Exception:
+            # The regular switch path retains its existing fallback behavior.
+            self.compact_window = None
+
+    def _mui_surface_active(self) -> bool:
+        """Whether a visible MUI renderer owns the current interface."""
+
+        workspace = getattr(self, "mui_workspace", None)
+        if workspace is not None and workspace.active:
+            return True
+        compact = getattr(self, "compact_window", None)
+        compact_workspace = getattr(compact, "_mui_workspace", None)
+        return bool(compact_workspace is not None and compact_workspace.active)
+
+    def _set_classic_chrome_visible(self, visible: bool) -> None:
+        """Avoid laying out the hidden Tk workspace while MUI owns the window."""
+
+        widgets = (
+            getattr(self, "header_frame", None),
+            getattr(self, "body_frame", None),
+            getattr(self, "main_footer", None),
+        )
+        if not all(widgets):
+            return
+        if not visible:
+            for widget in widgets:
+                if widget is not None:
+                    widget.grid_remove()
+            return
+        self.header_frame.grid(row=0, column=0, sticky="ew")
+        self.body_frame.grid(row=1, column=0, sticky="nsew")
+        self.main_footer.grid(row=2, column=0, sticky="ew")
+        self._responsive_layout_signature = None
+        self.after_idle(self._apply_responsive_layout)

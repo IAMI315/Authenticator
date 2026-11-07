@@ -11,7 +11,11 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -30,10 +34,13 @@ data class AppState(
     val passwordFavoriteOnly: Boolean = false,
     val accountShowPinned: Boolean = true,
     val passwordShowPinned: Boolean = true,
+    val accountProviderKey: String = "",
+    val accountOtherProvidersOnly: Boolean = false,
     val selectedAccountIds: Set<String> = emptySet(),
     val selectedPasswordIds: Set<String> = emptySet(),
     val accountSort: AccountSortPreference = AccountSortPreference(),
     val passwordSort: PasswordSortPreference = PasswordSortPreference(),
+    val serverTerminalSessions: List<AndroidTerminalSession> = emptyList(),
 )
 
 sealed interface AppEvent {
@@ -61,14 +68,26 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val state = _state.asStateFlow()
     private val _events = MutableSharedFlow<AppEvent>(extraBufferCapacity = 8)
     val events = _events.asSharedFlow()
+    private val gatewayMutex = Mutex()
+    private val sshSessions = AndroidSshSessionManager()
     private var ticker: Job? = null
+    private var searchRefresh: Job? = null
     private var backgroundAt = 0L
 
-    init { startup() }
+    init {
+        viewModelScope.launch {
+            sshSessions.sessions.collect { sessions ->
+                _state.value = _state.value.copy(
+                    serverTerminalSessions = sessions.values.sortedBy { it.id },
+                )
+            }
+        }
+        startup()
+    }
 
     private fun startup() = viewModelScope.launch {
         runBusy {
-            val result = JSONObject(gateway.startup())
+            val result = JSONObject(invokeGateway { gateway.startup() })
             val setup = result.optString("status") == "needs_setup"
             _state.value = _state.value.copy(
                 loading = false,
@@ -81,26 +100,32 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private suspend fun runBusy(block: suspend () -> Unit) {
         try {
-            withContext(Dispatchers.IO) { block() }
+            block()
         } catch (error: Exception) {
             _state.value = _state.value.copy(loading = false)
             _events.emit(AppEvent.Error(error.cause?.message ?: error.message ?: "操作失败"))
         }
     }
 
+    private suspend fun <T> invokeGateway(action: () -> T): T =
+        withContext(Dispatchers.IO) { gatewayMutex.withLock { action() } }
+
     fun initialize(password: String) = mutate("保险库已创建") { gateway.initialize(password) }
     fun unlock(password: String) = mutate("保险库已解锁") { gateway.unlock(password) }
 
     fun lock(message: String = "保险库已锁定") = viewModelScope.launch {
         runBusy {
-            gateway.lock()
+            sshSessions.clearAll()
+            invokeGateway { gateway.lock() }
             ticker?.cancel()
+            searchRefresh?.cancel()
             _state.value = _state.value.copy(
                 locked = true,
                 snapshot = VaultSnapshot(),
                 privacyShield = false,
                 selectedAccountIds = emptySet(),
                 selectedPasswordIds = emptySet(),
+                serverTerminalSessions = emptyList(),
             )
             _events.emit(AppEvent.Message(message))
         }
@@ -109,8 +134,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun changeMasterPassword(current: String, next: String) =
         mutate("主密码已修改") { gateway.changeMasterPassword(current, next) }
 
-    fun setAccountQuery(value: String) { _state.value = _state.value.copy(accountQuery = value, selectedAccountIds = emptySet()); refresh() }
-    fun setPasswordQuery(value: String) { _state.value = _state.value.copy(passwordQuery = value, selectedPasswordIds = emptySet()); refresh() }
+    fun setAccountQuery(value: String) {
+        _state.value = _state.value.copy(accountQuery = value, selectedAccountIds = emptySet())
+        scheduleSearchRefresh()
+    }
+    fun setPasswordQuery(value: String) {
+        _state.value = _state.value.copy(passwordQuery = value, selectedPasswordIds = emptySet())
+        scheduleSearchRefresh()
+    }
     fun setAccountGroup(value: String) { _state.value = _state.value.copy(accountGroup = value, selectedAccountIds = emptySet()); refresh() }
     fun setPasswordGroup(value: String) { _state.value = _state.value.copy(passwordGroup = value, selectedPasswordIds = emptySet()); refresh() }
     fun setAccountFavoriteOnly(value: Boolean) { _state.value = _state.value.copy(accountFavoriteOnly = value, selectedAccountIds = emptySet()); refresh() }
@@ -120,18 +151,69 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _state.value = _state.value.copy(accountShowPinned = value, selectedAccountIds = emptySet())
         refresh()
     }
+    fun setAccountProvider(key: String) {
+        val state = _state.value
+        val nextKey = if (!state.accountOtherProvidersOnly && state.accountProviderKey == key) "" else key
+        _state.value = state.copy(
+            accountProviderKey = nextKey,
+            accountOtherProvidersOnly = false,
+            selectedAccountIds = emptySet(),
+        )
+        refresh()
+    }
+    fun setOtherAccountProvidersOnly() {
+        val state = _state.value
+        _state.value = state.copy(
+            accountProviderKey = "",
+            accountOtherProvidersOnly = !state.accountOtherProvidersOnly,
+            selectedAccountIds = emptySet(),
+        )
+        refresh()
+    }
     fun setPasswordShowPinned(value: Boolean) {
         preferences.edit().putBoolean("password_show_pinned", value).apply()
         _state.value = _state.value.copy(passwordShowPinned = value, selectedPasswordIds = emptySet())
         refresh()
     }
 
+    private fun scheduleSearchRefresh() {
+        searchRefresh?.cancel()
+        searchRefresh = viewModelScope.launch {
+            delay(220)
+            runBusy { refreshNow() }
+        }
+    }
+
     fun refresh() = viewModelScope.launch { runBusy { refreshNow() } }
 
-    private fun refreshNow() {
+    private suspend fun refreshNow() {
         if (_state.value.locked) return
         val state = _state.value
-        val snapshot = parseSnapshot(
+        var resolvedState = state
+        var snapshot = loadSnapshot(resolvedState)
+        if (
+            resolvedState.accountProviderKey.isNotBlank() &&
+            snapshot.accountProviders.none { it.key == resolvedState.accountProviderKey }
+        ) {
+            resolvedState = resolvedState.copy(accountProviderKey = "")
+            snapshot = loadSnapshot(resolvedState)
+        } else if (
+            resolvedState.accountOtherProvidersOnly && snapshot.otherProviderCount == 0
+        ) {
+            resolvedState = resolvedState.copy(accountOtherProvidersOnly = false)
+            snapshot = loadSnapshot(resolvedState)
+        }
+        _state.value = resolvedState.copy(
+            loading = false,
+            locked = false,
+            setupRequired = false,
+            snapshot = snapshot,
+        )
+        if (ticker == null || ticker?.isActive != true) startTicker()
+    }
+
+    private suspend fun loadSnapshot(state: AppState): VaultSnapshot = parseSnapshot(
+        invokeGateway {
             gateway.snapshot(
                 state.accountQuery,
                 state.passwordQuery,
@@ -143,25 +225,37 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 state.passwordShowPinned,
                 state.accountSort,
                 state.passwordSort,
-            ),
-        )
-        _state.value = state.copy(loading = false, locked = false, setupRequired = false, snapshot = snapshot)
-        if (ticker == null || ticker?.isActive != true) startTicker()
-    }
+                state.accountProviderKey,
+                state.accountOtherProvidersOnly,
+            )
+        },
+    )
 
     private fun startTicker() {
         ticker?.cancel()
         ticker = viewModelScope.launch {
-            while (true) {
+            delay((1_000L - System.currentTimeMillis() % 1_000L).coerceAtLeast(1L))
+            while (isActive) {
+                runBusy { refreshDynamicOtpValues() }
                 delay(1_000)
-                runBusy { refreshNow() }
             }
+        }
+    }
+
+    private suspend fun refreshDynamicOtpValues() {
+        if (_state.value.locked) return
+        val (locked, values) = parseOtpDynamicValues(invokeGateway { gateway.otpDynamicValues() })
+        if (locked) {
+            ticker?.cancel()
+            _state.value = _state.value.copy(locked = true, snapshot = VaultSnapshot())
+        } else if (values.isNotEmpty()) {
+            _state.value = _state.value.copy(snapshot = _state.value.snapshot.withOtpDynamicValues(values))
         }
     }
 
     private fun mutate(message: String, action: () -> String) = viewModelScope.launch {
         runBusy {
-            action()
+            invokeGateway(action)
             _state.value = _state.value.copy(locked = false, setupRequired = false)
             refreshNow()
             _events.emit(AppEvent.Message(message))
@@ -257,9 +351,119 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         gateway.assignPasswordGroups(JSONArray().put(id).toString(), JSONArray(groups).toString())
     }
 
+    fun getServer(id: String, callback: (JSONObject) -> Unit) = viewModelScope.launch {
+        try {
+            callback(JSONObject(invokeGateway { gateway.getServer(id) }))
+        } catch (error: Exception) {
+            _events.emit(AppEvent.Error(error.cause?.message ?: error.message ?: "无法读取服务器档案"))
+        }
+    }
+
+    fun createServer(data: JSONObject) = mutate("服务器已添加") { gateway.createServer(data.toString()) }
+
+    fun updateServer(data: JSONObject) = viewModelScope.launch {
+        runBusy {
+            val profileId = data.optString("id")
+            invokeGateway { gateway.updateServer(data.toString()) }
+            if (profileId.isNotBlank()) sshSessions.closeProfile(profileId)
+            refreshNow()
+            _events.emit(AppEvent.Message("服务器已更新，相关终端已断开"))
+        }
+    }
+
+    fun deleteServer(profileId: String) = viewModelScope.launch {
+        runBusy {
+            invokeGateway { gateway.deleteServer(profileId) }
+            sshSessions.closeProfile(profileId)
+            refreshNow()
+            _events.emit(AppEvent.Message("服务器已删除"))
+        }
+    }
+
+    fun connectServer(profileId: String) = viewModelScope.launch {
+        try {
+            val profile = JSONObject(invokeGateway { gateway.getServerConnection(profileId) })
+            sshSessions.connect(AndroidServerConnection.fromJson(profile))
+        } catch (error: Exception) {
+            _events.emit(AppEvent.Error(error.cause?.message ?: error.message ?: "SSH 连接失败"))
+        }
+    }
+
+    fun disconnectTerminal(sessionId: String) {
+        sshSessions.dismiss(sessionId)
+    }
+
+    fun sendTerminalInput(sessionId: String, input: String) {
+        // Escape, Tab and other terminal control characters are meaningful even though
+        // String.isBlank() considers some of them to be whitespace.
+        if (input.isEmpty()) return
+        try {
+            sshSessions.write(sessionId, input)
+        } catch (error: Exception) {
+            _events.tryEmit(AppEvent.Error(error.message ?: "终端输入失败"))
+        }
+    }
+
+    fun resizeTerminal(sessionId: String, columns: Int, rows: Int) {
+        sshSessions.resize(sessionId, columns, rows)
+    }
+
+    fun approveServerHostKey(sessionId: String) = viewModelScope.launch {
+        val session = _state.value.serverTerminalSessions.firstOrNull { it.id == sessionId }
+        val prompt = session?.hostKeyPrompt ?: run {
+            _events.emit(AppEvent.Error("主机指纹确认已失效"))
+            return@launch
+        }
+        try {
+            invokeGateway {
+                gateway.trustServerHostKey(
+                    JSONObject()
+                        .put("profile_id", session.profileId)
+                        .put("algorithm", prompt.algorithm)
+                        .put("key_data", prompt.keyData)
+                        .toString(),
+                )
+            }
+            sshSessions.approveHostKey(sessionId)
+            refreshNow()
+        } catch (error: Exception) {
+            sshSessions.rejectHostKey(sessionId)
+            _events.emit(AppEvent.Error(error.cause?.message ?: error.message ?: "无法保存主机指纹"))
+        }
+    }
+
+    fun rejectServerHostKey(sessionId: String) {
+        sshSessions.rejectHostKey(sessionId)
+    }
+
+    fun resetServerHostKey(profileId: String) = viewModelScope.launch {
+        runBusy {
+            invokeGateway { gateway.resetServerHostKey(profileId) }
+            sshSessions.closeProfile(profileId)
+            refreshNow()
+            _events.emit(AppEvent.Message("已重置主机信任记录"))
+        }
+    }
+
+    fun getAccount(id: String, callback: (JSONObject) -> Unit) = viewModelScope.launch {
+        try {
+            callback(JSONObject(invokeGateway { gateway.getAccount(id) }))
+        } catch (error: Exception) {
+            _events.emit(AppEvent.Error(error.cause?.message ?: error.message ?: "无法读取验证码账号"))
+        }
+    }
+
+    fun exportAccountUri(id: String, callback: (String) -> Unit) = viewModelScope.launch {
+        try {
+            callback(invokeGateway { gateway.exportAccountUri(id) })
+        } catch (error: Exception) {
+            _events.emit(AppEvent.Error(error.cause?.message ?: error.message ?: "无法导出 URI"))
+        }
+    }
+
     fun getPassword(id: String, callback: (JSONObject) -> Unit) = viewModelScope.launch {
         try {
-            val result = withContext(Dispatchers.IO) { JSONObject(gateway.getPassword(id)) }
+            val result = JSONObject(invokeGateway { gateway.getPassword(id) })
             callback(result)
         } catch (error: Exception) {
             _events.emit(AppEvent.Error(error.cause?.message ?: error.message ?: "无法读取密码"))
@@ -267,13 +471,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun generatePassword(options: JSONObject, callback: (String) -> Unit) = viewModelScope.launch {
-        try { callback(withContext(Dispatchers.IO) { gateway.generatePassword(options.toString()) }) }
+        try { callback(invokeGateway { gateway.generatePassword(options.toString()) }) }
         catch (error: Exception) { _events.emit(AppEvent.Error(error.message ?: "无法生成密码")) }
     }
 
     fun processQrPayload(uri: String, callback: (JSONObject?) -> Unit) = viewModelScope.launch {
         try {
-            val result = withContext(Dispatchers.IO) { JSONObject(gateway.processQrPayload(uri)) }
+            val result = JSONObject(invokeGateway { gateway.processQrPayload(uri) })
             if (result.optString("kind") == "single") {
                 callback(result.getJSONObject("entry"))
             } else {
@@ -295,13 +499,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun exportBackup(encrypted: Boolean, callback: (String) -> Unit) = viewModelScope.launch {
-        try { callback(withContext(Dispatchers.IO) { gateway.exportBackup(encrypted) }) }
+        try { callback(invokeGateway { gateway.exportBackup(encrypted) }) }
         catch (error: Exception) { _events.emit(AppEvent.Error(error.cause?.message ?: "导出失败")) }
     }
 
     fun exportGoogleAuthenticator(callback: (JSONObject) -> Unit) = viewModelScope.launch {
         try {
-            callback(withContext(Dispatchers.IO) { JSONObject(gateway.exportGoogleAuthenticator()) })
+            callback(JSONObject(invokeGateway { gateway.exportGoogleAuthenticator() }))
         } catch (error: Exception) {
             _events.emit(
                 AppEvent.Error(error.cause?.message ?: error.message ?: "无法生成 Google 导入二维码"),
@@ -311,7 +515,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun importBackup(content: String, password: String, callback: (Boolean) -> Unit) = viewModelScope.launch {
         try {
-            val result = withContext(Dispatchers.IO) { JSONObject(gateway.importBackup(content, password)) }
+            val result = JSONObject(invokeGateway { gateway.importBackup(content, password) })
             if (result.optBoolean("password_required")) callback(true)
             else {
                 refresh()
@@ -346,6 +550,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun onBackground() {
         backgroundAt = System.currentTimeMillis()
+        ticker?.cancel()
+        sshSessions.clearAll()
         _state.value = _state.value.copy(privacyShield = true)
     }
 
@@ -356,6 +562,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             lock("保险库已自动锁定")
         } else {
             _state.value = _state.value.copy(privacyShield = false)
+            if (!_state.value.locked) startTicker()
         }
+    }
+
+    override fun onCleared() {
+        sshSessions.clearAll()
+        super.onCleared()
     }
 }

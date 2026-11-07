@@ -27,8 +27,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     # DPI awareness must be configured before importing Tkinter or creating an
     # HWND. Keeping the UI import local also preserves the headless self-test.
     from presentation.dpi import DpiContext, configure_process_dpi_awareness
+    from presentation.webview_host import initialize_webview_com
 
     dpi_mode = configure_process_dpi_awareness()
+    from presentation.application_icon import configure_application_identity
+
+    configure_application_identity()
+    initialize_webview_com()
     from presentation.main_window import MainWindow
 
     # 正常启动只在此处安装日志，避免领域/应用层接触全局日志配置。
@@ -36,7 +41,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     logger = logging.getLogger(__name__)
     logger.info("Application starting")
     try:
-        application = MainWindow(dpi_context=DpiContext(mode=dpi_mode))
+        application = MainWindow(
+            dpi_context=DpiContext(mode=dpi_mode),
+            mui_enabled="--classic-ui" not in arguments,
+        )
         application.mainloop()
     except Exception:
         logger.exception("Application terminated unexpectedly")

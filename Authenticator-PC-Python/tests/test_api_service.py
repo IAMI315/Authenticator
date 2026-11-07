@@ -79,6 +79,21 @@ def test_api_service_lists_accounts_without_secrets_and_gets_secret_on_request()
     assert payload["account"]["secret"] == SECRET
 
 
+def test_api_service_returns_current_code_without_exposing_secret():
+    """验证码路由只返回当前动态码和计时信息，不复用密钥响应。"""
+
+    vault = FakeVault()
+    vault.entries.append(make_entry())
+    service = make_service(vault)
+
+    status, payload = service.handle("get_code", {"id": "alice@example.com"})
+    assert status == 200
+    assert payload["code"].isdigit()
+    assert len(payload["code"]) == 6
+    assert payload["remaining_seconds"] in range(1, 31)
+    assert "secret" not in payload["account"]
+
+
 def test_api_service_creates_account_and_rejects_duplicate():
     """创建应写入账号；同 ID 的重复请求必须返回冲突。"""
 
@@ -123,3 +138,15 @@ def test_api_service_rejects_unknown_group_and_ambiguous_lookup():
     status, payload = service.handle("get_secret", {"issuer": "Example"})
     assert status == 409
     assert payload == {"error": "multiple_accounts_match"}
+
+
+def test_api_service_preflights_scan_groups_without_starting_scan():
+    """扫码 API 的分组校验沿用新增账号规则，实际 UI 启动由控制器负责。"""
+
+    vault = FakeVault()
+    service = make_service(vault)
+    assert service.handle("scan_add", {"group_ids": ["default"]}) == (200, {"group_ids": ["default"]})
+    assert service.handle("scan_add", {"group_ids": ["missing"]}) == (
+        400,
+        {"error": "unknown_group_ids", "group_ids": ["missing"]},
+    )

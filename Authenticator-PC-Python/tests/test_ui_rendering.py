@@ -319,7 +319,7 @@ def test_compact_window_lists_all_accounts_and_scrolls_past_two_rows():
         ]
         root.dpi_context = DpiContext()  # type: ignore[attr-defined]
         root.icons = IconRegistry(root)  # type: ignore[attr-defined]
-        root.settings = SimpleNamespace(compact_clipboard="")  # type: ignore[attr-defined]
+        root.settings = SimpleNamespace(compact_clipboard="", otp_codes_visible=True)  # type: ignore[attr-defined]
         root.window_on_top = False  # type: ignore[attr-defined]
         root.locked = False  # type: ignore[attr-defined]
         root.search_var = tk.StringVar(master=root)  # type: ignore[attr-defined]
@@ -365,6 +365,31 @@ def test_compact_window_close_exits_instead_of_switching_to_full_window():
     assert calls == ["shutdown"]
 
 
+def test_compact_window_foreground_presentation_restores_topmost_preference():
+    calls: list[tuple[object, ...]] = []
+    delayed: list[Callable[[], None]] = []
+    compact = SimpleNamespace(
+        app=SimpleNamespace(window_on_top=False),
+        deiconify=lambda: calls.append(("deiconify",)),
+        attributes=lambda *args: calls.append(("attributes", *args)),
+        lift=lambda: calls.append(("lift",)),
+        focus_force=lambda: calls.append(("focus_force",)),
+        winfo_exists=lambda: True,
+        after=lambda _milliseconds, callback: delayed.append(callback),
+    )
+
+    CompactWindow.present_in_foreground(compact)  # type: ignore[arg-type]
+    assert calls == [
+        ("deiconify",),
+        ("attributes", "-topmost", True),
+        ("lift",),
+        ("focus_force",),
+    ]
+
+    delayed[0]()
+    assert calls[-2:] == [("attributes", "-topmost", False), ("lift",)]
+
+
 def test_shutdown_persists_the_mode_that_was_visible_at_exit():
     persisted: list[bool] = []
     owner = SimpleNamespace(
@@ -376,6 +401,7 @@ def test_shutdown_persists_the_mode_that_was_visible_at_exit():
         _persist_settings=lambda: persisted.append(owner.settings.compact_mode),
         _save_window_size=lambda force=False: None,
         api_controller=None,
+        ssh_sessions=SimpleNamespace(close_all=lambda: None),
         background_tasks=SimpleNamespace(close=lambda: None),
         destroy=lambda: None,
     )
@@ -396,7 +422,7 @@ def test_module_segmented_switch_uses_one_control_and_distinct_active_colors():
         selection_id = switch.find_withtag("selection")[0]
         assert switch.active == "otp"
         assert switch.itemcget(selection_id, "fill") == OTP_FILL
-        assert switch.winfo_reqwidth() == DpiContext().dp(168)
+        assert switch.winfo_reqwidth() == DpiContext().dp(178)
 
         switch._activate("passwords")
         assert selected == ["passwords"]
@@ -406,6 +432,9 @@ def test_module_segmented_switch_uses_one_control_and_distinct_active_colors():
 
         switch._toggle_from_keyboard(SimpleNamespace())
         assert selected == ["passwords", "otp"]
+        switch.set_active("otp")
+        selection_id = switch.find_withtag("selection")[0]
+        assert switch.itemcget(selection_id, "fill") == OTP_FILL
     finally:
         root.destroy()
 

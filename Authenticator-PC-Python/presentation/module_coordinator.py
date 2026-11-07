@@ -1,4 +1,4 @@
-"""Switch between peer OTP and password workspaces."""
+"""Switch between classic OTP and password workspaces."""
 
 from __future__ import annotations
 
@@ -46,17 +46,17 @@ class ModuleCoordinator:
         self.app.otp_table.set_layout_active(module == "otp")
         self.password_workspace.table.set_layout_active(module == "passwords")
         if module == "otp":
-            self.otp_workspace.grid()
-            self.password_workspace.grid_remove()
+            self.otp_workspace.tkraise()
             self.primary_add_button.configure(text="新增", command=self.app.add_account)
+            self.primary_add_button.configure(state="normal" if not self.app.locked else "disabled")
             if self.otp_footer is not None:
                 self.otp_footer.grid()
             if self.password_footer is not None:
                 self.password_footer.grid_remove()
-        else:
-            self.password_workspace.grid()
-            self.otp_workspace.grid_remove()
+        elif module == "passwords":
+            self.password_workspace.tkraise()
             self.primary_add_button.configure(text="新增密码", command=self.password_controller.add)
+            self.primary_add_button.configure(state="normal" if not self.app.locked else "disabled")
             if self._password_dirty:
                 self.password_controller.refresh()
                 self._password_dirty = False
@@ -70,21 +70,34 @@ class ModuleCoordinator:
         self._mounted = True
 
     def add_item(self) -> None:
-        self.app.add_account() if self.active == "otp" else self.password_controller.add()
+        if self.active == "otp":
+            self.app.add_account()
+        elif self.active == "passwords":
+            self.password_controller.add()
 
     def create_group(self) -> None:
-        self.app.create_group() if self.active == "otp" else self.password_controller.create_group()
+        if self.active == "otp":
+            self.app.create_group()
+        elif self.active == "passwords":
+            self.password_controller.create_group()
 
     def manage_groups(self) -> None:
-        self.app.manage_groups() if self.active == "otp" else self.password_controller.manage_groups()
+        if self.active == "otp":
+            self.app.manage_groups()
+        elif self.active == "passwords":
+            self.password_controller.manage_groups()
 
     def assign_groups(self) -> None:
-        self.app.assign_selected_groups() if self.active == "otp" else self.password_controller.assign_groups()
+        if self.active == "otp":
+            self.app.assign_selected_groups()
+        elif self.active == "passwords":
+            self.password_controller.assign_groups()
 
     def focus_search(self) -> str:
         if self.active == "otp":
             return self.app.focus_search()
-        self.password_workspace.focus_search()
+        if self.active == "passwords":
+            self.password_workspace.focus_search()
         return "break"
 
     def refresh_passwords(self) -> None:

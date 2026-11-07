@@ -54,6 +54,10 @@ def test_password_view_model_masks_reveals_searches_and_conceals_on_lock(tmp_pat
     assert model.row(entry).password == MASKED_PASSWORD
     model.toggle_reveal(entry.id)
     assert model.row(entry).password == "secret"
+    model.set_passwords_visible(True)
+    assert model.row(entry).password == "secret"
+    model.toggle_reveal(entry.id)
+    assert model.row(entry).password == MASKED_PASSWORD
     model.update_state(query="", active_group_id=None, locked=True)
     assert model.revealed_entry_id is None
     assert model.visible_entries() == []

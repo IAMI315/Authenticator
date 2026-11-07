@@ -23,6 +23,7 @@ from domain.passwords import (
     default_password_group,
     normalise_password_group_ids,
 )
+from domain.servers import ServerProfile
 from infrastructure.crypto import VaultCryptoError, decrypt_payload, derive_key, encrypt_payload_with_key
 from infrastructure.errors import VaultError
 
@@ -47,6 +48,7 @@ class Vault:
         self.groups: list[AccountGroup] = [default_account_group()]
         self.password_entries: list[PasswordEntry] = []
         self.password_groups: list[PasswordGroup] = [default_password_group()]
+        self.server_profiles: list[ServerProfile] = []
         self.secure_settings: dict[str, str] = {}
         self.encrypted = False
         self._envelope: dict[str, Any] | None = None
@@ -69,6 +71,7 @@ class Vault:
             "groups": [group.to_dict() for group in self.groups],
             "password_entries": [entry.to_dict() for entry in self.password_entries],
             "password_groups": [group.to_dict() for group in self.password_groups],
+            "server_profiles": [profile.to_dict() for profile in self.server_profiles],
             "secure_settings": dict(self.secure_settings),
         }
 
@@ -89,6 +92,9 @@ class Vault:
         raw_password_groups = payload.get("password_groups", [])
         if not isinstance(raw_password_groups, list):
             raise VaultError("本地保险库的密码分组格式不正确")
+        raw_server_profiles = payload.get("server_profiles", [])
+        if not isinstance(raw_server_profiles, list):
+            raise VaultError("本地保险库的服务器列表格式不正确")
         raw_secure_settings = payload.get("secure_settings", {})
         if not isinstance(raw_secure_settings, dict):
             raise VaultError("本地保险库的安全设置格式不正确")
@@ -97,6 +103,7 @@ class Vault:
             entries = [OTPEntry.from_dict(entry) for entry in raw_entries]
             parsed_password_groups = [PasswordGroup.from_dict(group) for group in raw_password_groups]
             password_entries = [PasswordEntry.from_dict(entry) for entry in raw_password_entries]
+            server_profiles = [ServerProfile.from_dict(profile) for profile in raw_server_profiles]
         except (TypeError, ValueError) as error:
             raise VaultError("本地保险库包含无效的账号或分组记录") from error
 
@@ -135,11 +142,23 @@ class Vault:
         self.password_entries = password_entries
         for password_entry in self.password_entries:
             password_entry.group_ids = self.normalise_password_entry_group_ids(password_entry.group_ids)
+        server_ids: set[str] = set()
+        server_identities: set[tuple[str, str, int, str]] = set()
+        for profile in server_profiles:
+            if profile.id in server_ids or profile.connection_identity in server_identities:
+                raise VaultError("本地保险库包含重复的服务器记录")
+            server_ids.add(profile.id)
+            server_identities.add(profile.connection_identity)
+        self.server_profiles = server_profiles
         self.secure_settings = {
             key: value
             for key, value in raw_secure_settings.items()
             if isinstance(key, str) and isinstance(value, str)
         }
+        # The old external monitoring URL has no meaning in the SSH module.
+        # Persist its removal with the next safe encrypted migration write.
+        if self.secure_settings.pop("server_url", None) is not None:
+            self.migration_pending = True
 
     def normalise_entry_group_ids(self, value: Any) -> list[str]:
         """保留默认分组并过滤当前保险库中不存在的自定义分组 ID。"""
@@ -227,6 +246,7 @@ class Vault:
             self.groups = [default_account_group()]
             self.password_entries = []
             self.password_groups = [default_password_group()]
+            self.server_profiles = []
             self.secure_settings = {}
             self.encrypted = False
             self._envelope = None
@@ -249,6 +269,7 @@ class Vault:
             self.groups = [default_account_group()]
             self.password_entries = []
             self.password_groups = [default_password_group()]
+            self.server_profiles = []
             self.secure_settings = {}
             return True
 
@@ -298,6 +319,7 @@ class Vault:
             self.groups = [default_account_group()]
             self.password_entries = []
             self.password_groups = [default_password_group()]
+            self.server_profiles = []
             self.secure_settings = {}
             self._key = None
 

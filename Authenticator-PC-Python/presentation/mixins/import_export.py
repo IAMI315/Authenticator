@@ -35,7 +35,7 @@ class ImportExportMixin(WindowMixin):
         except (VaultError, ValueError) as error:
             messagebox.showerror(APP_NAME, f"导入失败：{error}", parent=self)
             return None
-        if result.accounts_added or result.groups_added:
+        if result.accounts_added or result.groups_added or result.passwords_added or result.servers_added:
             self.refresh_tree()
         message = f"已导入 {result.accounts_added} 个账号。"
         if result.groups_added:
@@ -48,6 +48,10 @@ class ImportExportMixin(WindowMixin):
             message += f"已导入 {result.password_groups_added} 个密码分组。"
         if result.password_duplicates_skipped:
             message += f"已跳过 {result.password_duplicates_skipped} 条重复密码。"
+        if result.servers_added:
+            message += f"已导入 {result.servers_added} 台服务器。"
+        if result.server_duplicates_skipped:
+            message += f"已跳过 {result.server_duplicates_skipped} 台重复服务器。"
         if bundle.warnings:
             message += f"已跳过 {len(bundle.warnings)} 条不支持或无效的记录。"
         self._show_status(message, clear_after=10_000)
@@ -133,8 +137,8 @@ class ImportExportMixin(WindowMixin):
 
         if not self._guard_unlocked():
             return
-        if not self.vault.entries and not self.vault.password_entries:
-            self._show_status("暂无账号或密码可导出。")
+        if not self.vault.entries and not self.vault.password_entries and not self.vault.server_profiles:
+            self._show_status("暂无账号、密码或服务器可导出。")
             return
         selected = filedialog.asksaveasfilename(
             parent=self,
@@ -147,10 +151,11 @@ class ImportExportMixin(WindowMixin):
             return
         account_count = len(self.vault.entries)
         password_count = len(self.vault.password_entries)
+        server_count = len(self.vault.server_profiles)
         self._run_background_operation(
             lambda: self.backup_service.export_encrypted(selected, self.vault),
             lambda _result: self._show_status(
-                f"已加密导出 {account_count} 个账号和 {password_count} 条密码。"
+                f"已加密导出 {account_count} 个账号、{password_count} 条密码和 {server_count} 台服务器。"
             ),
             status="正在导出加密备份...",
             on_error=lambda error: messagebox.showerror(APP_NAME, f"导出失败：{error}", parent=self),
@@ -161,12 +166,12 @@ class ImportExportMixin(WindowMixin):
 
         if not self._guard_unlocked():
             return
-        if not self.vault.entries and not self.vault.password_entries:
-            self._show_status("暂无账号或密码可导出。")
+        if not self.vault.entries and not self.vault.password_entries and not self.vault.server_profiles:
+            self._show_status("暂无账号、密码或服务器可导出。")
             return
         if not messagebox.askyesno(
             APP_NAME,
-            "导出的 JSON 包含明文账号密钥和密码。请妥善保管，是否继续？",
+            "导出的 JSON 包含明文账号密钥和密码；服务器密码和私钥不会导出。请妥善保管，是否继续？",
             parent=self,
         ):
             return
@@ -182,6 +187,7 @@ class ImportExportMixin(WindowMixin):
             return
         account_count = len(self.vault.entries)
         password_count = len(self.vault.password_entries)
+        server_count = len(self.vault.server_profiles)
 
         def export_failed(error: Exception) -> None:
             """在主线程呈现备份写入失败。"""
@@ -191,7 +197,7 @@ class ImportExportMixin(WindowMixin):
         self._run_background_operation(
             lambda: self.backup_service.export_plain(selected, self.vault),
             lambda _result: self._show_status(
-                f"已导出 {account_count} 个账号和 {password_count} 条密码。"
+                f"已导出 {account_count} 个账号、{password_count} 条密码和 {server_count} 台去敏服务器资料。"
             ),
             status="正在导出备份...",
             on_error=export_failed,

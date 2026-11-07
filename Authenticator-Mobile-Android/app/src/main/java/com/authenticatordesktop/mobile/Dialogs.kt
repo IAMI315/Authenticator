@@ -19,6 +19,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -243,6 +244,129 @@ fun PasswordEditorDialog(
     )
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ServerEditorDialog(
+    initial: JSONObject? = null,
+    onPickPrivateKey: ((String) -> Unit) -> Unit,
+    onClose: () -> Unit,
+    onSave: (JSONObject) -> Unit,
+) {
+    var name by remember(initial) { mutableStateOf(initial?.optString("name") ?: "") }
+    var host by remember(initial) { mutableStateOf(initial?.optString("host") ?: "") }
+    var port by remember(initial) { mutableStateOf((initial?.optInt("port", 22) ?: 22).toString()) }
+    var username by remember(initial) { mutableStateOf(initial?.optString("username") ?: "") }
+    var authKind by remember(initial) { mutableStateOf(initial?.optString("auth_kind", "password") ?: "password") }
+    var password by remember { mutableStateOf("") }
+    var privateKey by remember { mutableStateOf("") }
+    var privateKeyPassphrase by remember { mutableStateOf("") }
+    var notes by remember(initial) { mutableStateOf(initial?.optString("notes") ?: "") }
+    var replaceCredentials by remember(initial) { mutableStateOf(initial == null) }
+    var authExpanded by remember { mutableStateOf(false) }
+    val needsCredentials = initial == null || replaceCredentials
+    val credentialsValid = when (authKind) {
+        "private_key" -> privateKey.isNotBlank()
+        else -> password.isNotBlank()
+    }
+
+    AlertDialog(
+        onDismissRequest = onClose,
+        title = { Text(if (initial == null) "新增服务器" else "编辑服务器") },
+        text = {
+            LazyColumn(
+                modifier = Modifier.fillMaxWidth().heightIn(max = 580.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                item { OutlinedTextField(name, { name = it }, label = { Text("名称 *") }, singleLine = true, modifier = Modifier.fillMaxWidth()) }
+                item { OutlinedTextField(host, { host = it }, label = { Text("IP 或域名 *") }, singleLine = true, modifier = Modifier.fillMaxWidth()) }
+                item { OutlinedTextField(port, { port = it.filter(Char::isDigit) }, label = { Text("SSH 端口") }, singleLine = true, modifier = Modifier.fillMaxWidth()) }
+                item { OutlinedTextField(username, { username = it }, label = { Text("用户名 *") }, singleLine = true, modifier = Modifier.fillMaxWidth()) }
+                if (initial != null) item {
+                    GeneratorToggle("更新认证资料", replaceCredentials) { enabled ->
+                        replaceCredentials = enabled
+                        if (enabled) {
+                            password = ""
+                            privateKey = ""
+                            privateKeyPassphrase = ""
+                        }
+                    }
+                }
+                item {
+                    ExposedDropdownMenuBox(
+                        expanded = authExpanded,
+                        onExpandedChange = { if (needsCredentials) authExpanded = !authExpanded },
+                    ) {
+                        OutlinedTextField(
+                            value = if (authKind == "private_key") "私钥" else "密码",
+                            onValueChange = {},
+                            label = { Text("认证方式") },
+                            readOnly = true,
+                            enabled = needsCredentials,
+                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(authExpanded) },
+                            modifier = Modifier.menuAnchor(MenuAnchorType.PrimaryNotEditable).fillMaxWidth(),
+                        )
+                        ExposedDropdownMenu(expanded = authExpanded, onDismissRequest = { authExpanded = false }) {
+                            DropdownMenuItem(text = { Text("密码") }, onClick = { authKind = "password"; authExpanded = false })
+                            DropdownMenuItem(text = { Text("私钥") }, onClick = { authKind = "private_key"; authExpanded = false })
+                        }
+                    }
+                }
+                if (needsCredentials && authKind == "password") item {
+                    OutlinedTextField(
+                        password,
+                        { password = it },
+                        label = { Text("SSH 密码 *") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+                if (needsCredentials && authKind == "private_key") {
+                    item {
+                        OutlinedButton(onClick = { onPickPrivateKey { privateKey = it } }, modifier = Modifier.fillMaxWidth()) {
+                            Text(if (privateKey.isBlank()) "导入私钥文件" else "已选择私钥文件")
+                        }
+                    }
+                    item {
+                        OutlinedTextField(
+                            privateKeyPassphrase,
+                            { privateKeyPassphrase = it },
+                            label = { Text("私钥口令（如有）") },
+                            visualTransformation = PasswordVisualTransformation(),
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                }
+                item { OutlinedTextField(notes, { notes = it }, label = { Text("备注") }, minLines = 3, modifier = Modifier.fillMaxWidth()) }
+            }
+        },
+        confirmButton = {
+            DialogActions(
+                onClose,
+                name.trim().isNotBlank() && host.trim().isNotBlank() && username.trim().isNotBlank() &&
+                    (port.toIntOrNull() ?: 0) in 1..65_535 && (!needsCredentials || credentialsValid),
+            ) {
+                onSave(
+                    JSONObject().apply {
+                        initial?.let { put("id", it.optString("id")) }
+                        put("name", name)
+                        put("host", host)
+                        put("port", port.toIntOrNull() ?: 22)
+                        put("username", username)
+                        put("auth_kind", authKind)
+                        put("password", password)
+                        put("private_key", privateKey)
+                        put("private_key_passphrase", privateKeyPassphrase)
+                        put("notes", notes)
+                        put("replace_credentials", replaceCredentials)
+                    },
+                )
+            }
+        },
+    )
+}
+
 @Composable
 private fun GeneratorToggle(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -281,6 +405,31 @@ fun MasterPasswordDialog(
             ) { Text("确认") }
         },
         dismissButton = { onClose?.let { TextButton(onClick = it) { Text("取消") } } },
+    )
+}
+
+@Composable
+fun UriImportDialog(onClose: () -> Unit, onImport: (String) -> Unit) {
+    var uri by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onClose,
+        title = { Text("导入 otpauth URI") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("粘贴标准 otpauth:// URI 或 Google Authenticator 迁移 URI。", style = MaterialTheme.typography.bodySmall)
+                OutlinedTextField(
+                    value = uri,
+                    onValueChange = { uri = it },
+                    label = { Text("URI") },
+                    minLines = 3,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        },
+        confirmButton = {
+            Button(onClick = { onImport(uri.trim()) }, enabled = uri.trim().isNotBlank()) { Text("导入") }
+        },
+        dismissButton = { TextButton(onClick = onClose) { Text("取消") } },
     )
 }
 

@@ -109,7 +109,7 @@ class AccountListMixin(WindowMixin):
             values={
                 "service": row.service,
                 "account": row.account,
-                "code": row.code,
+                "code": row.code if self.settings.otp_codes_visible or "invalid" in row.tags else "••••••",
                 "remaining": row.expires,
                 "type": row.entry_type,
                 "created": row.created_at,
@@ -125,6 +125,11 @@ class AccountListMixin(WindowMixin):
 
     def refresh_tree(self) -> None:
         if not hasattr(self, "otp_table"):
+            return
+        if self._mui_surface_active():
+            # MUI owns rendering and will request a fresh service snapshot.
+            # Rebuilding the hidden Canvas tree on every model change causes
+            # needless layout work during WebView-backed operation.
             return
         self._refresh_group_selector()
         self._sync_view_model()
@@ -183,6 +188,7 @@ class AccountListMixin(WindowMixin):
             self.compact_window.refresh()
         if hasattr(self, "module_coordinator"):
             self.module_coordinator.refresh_passwords()
+            self.module_coordinator.refresh_server()
         self._refresh_dashboard_shell()
 
     def _update_visible_rows(self) -> None:
@@ -194,7 +200,7 @@ class AccountListMixin(WindowMixin):
         )
         if self.module_coordinator.active == "otp":
             self.stats_view.set_otp(self.main_view_model.dashboard_stats(now))
-        else:
+        elif self.module_coordinator.active == "passwords":
             self.stats_view.set_passwords(self.password_view_model.dashboard_stats())
         if self.compact_window is not None:
             self.compact_window.refresh()

@@ -85,21 +85,49 @@ data class PasswordRow(
     val name: String,
     val username: String,
     val url: String,
-    val notes: String,
     val favorite: Boolean,
     val pinned: Boolean,
     val createdAt: String?,
     val groupIds: List<String>,
 )
 
+/** Metadata-only server profile used by the Compose UI.
+ * Credentials and private keys are intentionally excluded from snapshots.
+ */
+data class ServerRow(
+    val id: String,
+    val name: String,
+    val host: String,
+    val port: Int,
+    val username: String,
+    val authKind: String,
+    val credentialsConfigured: Boolean,
+    val notes: String,
+    val trustedFingerprint: String,
+    val trustedAlgorithm: String,
+    val createdAt: String?,
+    val updatedAt: String?,
+)
+
 data class GroupRow(val id: String, val name: String)
+
+data class ProviderFilterRow(val key: String, val label: String, val count: Int)
+
+data class OtpDynamicValue(
+    val code: String,
+    val remaining: Int?,
+    val error: String,
+)
 
 data class VaultSnapshot(
     val locked: Boolean = true,
     val accounts: List<AccountRow> = emptyList(),
     val groups: List<GroupRow> = emptyList(),
+    val accountProviders: List<ProviderFilterRow> = emptyList(),
+    val otherProviderCount: Int = 0,
     val passwords: List<PasswordRow> = emptyList(),
     val passwordGroups: List<GroupRow> = emptyList(),
+    val servers: List<ServerRow> = emptyList(),
 )
 
 fun JSONArray.strings(): List<String> = buildList {
@@ -151,7 +179,6 @@ fun parseSnapshot(raw: String): VaultSnapshot {
                         name = item.optString("name"),
                         username = item.optString("username"),
                         url = item.optString("url"),
-                        notes = item.optString("notes"),
                         favorite = item.optBoolean("favorite"),
                         pinned = item.optBoolean("pinned"),
                         createdAt = item.optString("created_at").ifBlank { null },
@@ -161,11 +188,77 @@ fun parseSnapshot(raw: String): VaultSnapshot {
             }
         }
     } ?: emptyList()
+    val accountProviders = root.optJSONArray("account_providers")?.let { array ->
+        buildList {
+            repeat(array.length()) {
+                val item = array.getJSONObject(it)
+                add(
+                    ProviderFilterRow(
+                        key = item.getString("key"),
+                        label = item.getString("label"),
+                        count = item.optInt("count"),
+                    ),
+                )
+            }
+        }
+    } ?: emptyList()
+    val servers = root.optJSONArray("servers")?.let { array ->
+        buildList {
+            repeat(array.length()) {
+                val item = array.getJSONObject(it)
+                add(
+                    ServerRow(
+                        id = item.getString("id"),
+                        name = item.optString("name"),
+                        host = item.optString("host"),
+                        port = item.optInt("port", 22),
+                        username = item.optString("username"),
+                        authKind = item.optString("auth_kind", "password"),
+                        credentialsConfigured = item.optBoolean("credentials_configured"),
+                        notes = item.optString("notes"),
+                        trustedFingerprint = item.optString("trusted_fingerprint"),
+                        trustedAlgorithm = item.optString("trusted_algorithm"),
+                        createdAt = item.optString("created_at").ifBlank { null },
+                        updatedAt = item.optString("updated_at").ifBlank { null },
+                    ),
+                )
+            }
+        }
+    } ?: emptyList()
     return VaultSnapshot(
         locked = root.optBoolean("locked", true),
         accounts = accounts,
         groups = groups("groups"),
+        accountProviders = accountProviders,
+        otherProviderCount = root.optInt("other_provider_count"),
         passwords = passwords,
         passwordGroups = groups("password_groups"),
+        servers = servers,
     )
 }
+
+fun parseOtpDynamicValues(raw: String): Pair<Boolean, Map<String, OtpDynamicValue>> {
+    val root = JSONObject(raw)
+    val values = root.optJSONArray("values") ?: return root.optBoolean("locked") to emptyMap()
+    return root.optBoolean("locked") to buildMap {
+        repeat(values.length()) {
+            val item = values.getJSONObject(it)
+            put(
+                item.getString("id"),
+                OtpDynamicValue(
+                    code = item.optString("code", "------"),
+                    remaining = if (item.isNull("remaining")) null else item.optInt("remaining"),
+                    error = item.optString("error"),
+                ),
+            )
+        }
+    }
+}
+
+fun VaultSnapshot.withOtpDynamicValues(values: Map<String, OtpDynamicValue>): VaultSnapshot = copy(
+    accounts = accounts.map { account ->
+        values[account.id]?.let { dynamic ->
+            account.copy(code = dynamic.code, remaining = dynamic.remaining)
+        } ?: account
+    },
+)

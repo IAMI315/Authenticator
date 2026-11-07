@@ -41,6 +41,10 @@ def test_otp_navigation_scopes_top_providers_and_other_bucket(tmp_path):
     items = model.navigation_items(provider_limit=6)
     assert [item.id for item in items[:3]] == ["all", "favorites", "group:work"]
     assert sum(isinstance(item.scope, ProviderScope) for item in items) == 6
+    openai = next(item for item in items if item.label == "OpenAI")
+    assert (openai.brand_key, openai.official_url, openai.icon_key) == (
+        "openai", "https://openai.com", "openai"
+    )
     other = next(item for item in items if isinstance(item.scope, OtherProvidersScope))
     assert other.count == 1
 

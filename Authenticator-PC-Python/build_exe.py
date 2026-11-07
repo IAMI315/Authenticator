@@ -16,6 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 RELEASE = ROOT / "release"
 BUILD = ROOT / "build"
+FRONTEND = ROOT / "frontend"
 
 
 def main() -> int:
@@ -27,6 +28,7 @@ def main() -> int:
     artifact_name = os.environ.get("AUTHENTICATOR_OUTPUT_NAME", "AuthenticatorDesktop").strip()
     if not re.fullmatch(r"[A-Za-z0-9._-]+", artifact_name):
         raise ValueError("AUTHENTICATOR_OUTPUT_NAME contains unsupported characters")
+    _build_frontend()
     # 打包前先阻断质量问题，防止把无法验证的源码发布为二进制产物。
     subprocess.run([sys.executable, "-m", "pytest"], cwd=ROOT, check=True)
     subprocess.run([sys.executable, "-m", "ruff", "check", "."], cwd=ROOT, check=True)
@@ -41,6 +43,8 @@ def main() -> int:
         "--clean",
         "--onefile",
         "--windowed",
+        "--icon",
+        str(ROOT / "assets" / "icon.ico"),
         "--manifest",
         str(ROOT / "assets" / "windows" / "app.manifest"),
         "--name",
@@ -53,12 +57,30 @@ def main() -> int:
         str(BUILD / "pyinstaller-spec"),
         "--add-data",
         f"{ROOT / 'assets'};assets",
+        "--add-data",
+        f"{FRONTEND / 'dist'};frontend/dist",
         "--hidden-import",
         "cryptography.hazmat.bindings._rust",
         "--hidden-import",
         "PIL.ImageGrab",
         "--hidden-import",
         "zxingcpp",
+        "--hidden-import",
+        "tkwebview2.tkwebview2",
+        "--hidden-import",
+        "clr",
+        "--collect-all",
+        "tkwebview2",
+        "--collect-all",
+        "webview",
+        "--collect-all",
+        "clr_loader",
+        "--collect-all",
+        "pythonnet",
+        # Paramiko discovers ciphers and key implementations dynamically.  Collect
+        # its bundled dependencies so SSH keeps working from the one-file EXE.
+        "--collect-all",
+        "paramiko",
         "--exclude-module",
         "numpy",
         str(ROOT / "app.py"),
@@ -107,6 +129,33 @@ def main() -> int:
     print(f"Build complete: {executable}")
     print(f"Version: {version} | Size: {size_mb:.2f} MiB | Time: {elapsed:.1f}s")
     return 0
+
+
+def _build_frontend() -> None:
+    """Install locked local UI dependencies and bundle them without a CDN."""
+
+    if not (FRONTEND / "package.json").is_file():
+        raise RuntimeError("MUI frontend package.json is missing")
+    npm = shutil.which("npm.cmd") or shutil.which("npm")
+    if npm is None:
+        raise RuntimeError("MUI build requires Node.js and npm")
+    skip_install = os.environ.get("AUTHENTICATOR_SKIP_NPM_INSTALL") == "1"
+    if skip_install:
+        if not (FRONTEND / "node_modules").is_dir():
+            raise RuntimeError("AUTHENTICATOR_SKIP_NPM_INSTALL requires frontend/node_modules")
+    elif (FRONTEND / "package-lock.json").is_file():
+        if os.name == "nt":
+            # ``npm ci`` first deletes node_modules. On this Windows desktop
+            # that clean step can fail or stall when a package directory still
+            # has a transient system handle. Install from the lockfile in
+            # place and prevent any lockfile rewrite instead.
+            subprocess.run([npm, "install", "--no-audit", "--no-fund", "--package-lock=false"], cwd=FRONTEND, check=True)
+        else:
+            subprocess.run([npm, "ci"], cwd=FRONTEND, check=True)
+    else:
+        subprocess.run([npm, "install"], cwd=FRONTEND, check=True)
+    subprocess.run([npm, "run", "test"], cwd=FRONTEND, check=True)
+    subprocess.run([npm, "run", "build"], cwd=FRONTEND, check=True)
 
 
 if __name__ == "__main__":

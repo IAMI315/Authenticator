@@ -332,6 +332,7 @@ class EncryptedDataStore:
         vault.groups = [default_account_group()]
         vault.password_entries = []
         vault.password_groups = [default_password_group()]
+        vault.server_profiles = []
         vault.secure_settings = {}
         vault.migration_pending = False
 

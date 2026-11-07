@@ -71,6 +71,8 @@ class SettingsStore:
             "password_sort_direction": "descending",
             "otp_show_pinned": True,
             "password_show_pinned": True,
+            "otp_codes_visible": True,
+            "passwords_visible": True,
         }
 
     def load(self) -> None:
@@ -104,6 +106,8 @@ class SettingsStore:
                 )
                 self.values["otp_show_pinned"] = data.get("otp_show_pinned", True) is not False
                 self.values["password_show_pinned"] = data.get("password_show_pinned", True) is not False
+                self.values["otp_codes_visible"] = data.get("otp_codes_visible", True) is not False
+                self.values["passwords_visible"] = data.get("passwords_visible", True) is not False
                 compact_clipboard = data.get("compact_clipboard", "")
                 if isinstance(compact_clipboard, str):
                     self.values["compact_clipboard"] = compact_clipboard
@@ -236,6 +240,22 @@ class SettingsStore:
     @password_show_pinned.setter
     def password_show_pinned(self, enabled: bool) -> None:
         self.values["password_show_pinned"] = bool(enabled)
+
+    @property
+    def otp_codes_visible(self) -> bool:
+        return self.values.get("otp_codes_visible") is not False
+
+    @otp_codes_visible.setter
+    def otp_codes_visible(self, enabled: bool) -> None:
+        self.values["otp_codes_visible"] = bool(enabled)
+
+    @property
+    def passwords_visible(self) -> bool:
+        return self.values.get("passwords_visible") is not False
+
+    @passwords_visible.setter
+    def passwords_visible(self, enabled: bool) -> None:
+        self.values["passwords_visible"] = bool(enabled)
 
     @property
     def compact_clipboard(self) -> str:

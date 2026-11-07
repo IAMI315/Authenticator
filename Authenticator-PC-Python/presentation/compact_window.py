@@ -14,6 +14,7 @@ from typing import Any
 
 from domain.entities import OTPEntry
 from infrastructure.errors import VaultError
+from presentation.application_icon import set_window_icon
 from presentation.constants import APP_NAME, COMPACT_WINDOW_SIZE
 from presentation.dpi import DpiContext
 from presentation.glass_scrollbar import GlassScrollbar
@@ -161,18 +162,25 @@ class CompactWindow(tk.Toplevel):
     文字变量，避免每秒销毁控件造成闪烁。
     """
 
-    def __init__(self, app: Any) -> None:
-        """创建轻量窗口控件并立即使用主窗口当前状态刷新。"""
+    def __init__(self, app: Any, *, start_hidden: bool = False) -> None:
+        """创建轻量窗口控件；预热时保持隐藏，避免首次切换加载。"""
 
         super().__init__(app)
         self.app = app
+        self._start_hidden = start_hidden
+        self._mui_workspace: Any | None = None
+        if start_hidden:
+            self.withdraw()
         self.dpi_context: DpiContext = app.dpi_context
         self.title("验证器悬浮窗")
+        set_window_icon(self)
         self.resizable(False, False)
         self.geometry(self.dpi_context.physical_geometry(COMPACT_WINDOW_SIZE))
         # 标题栏关闭代表退出程序；“完整界面”按钮才负责返回主窗口。
         self.protocol("WM_DELETE_WINDOW", self._close_application)
         configure_dialog_surface(self)
+        if self._mount_mui_workspace():
+            return
         self._clipboard_click_after: str | None = None
         self._clipboard_editing = False
         self._clipboard_before_edit = ""
@@ -195,7 +203,7 @@ class CompactWindow(tk.Toplevel):
         header = ttk.Frame(surface, style="Dialog.TFrame")
         header.pack(fill="x")
         header.columnconfigure(1, weight=1)
-        brand_icon = app.icons.image("shield-check", 22, ACCENT)
+        brand_icon = app.icons.image("app", 22)
         self._images.append(brand_icon)
         ttk.Label(header, image=brand_icon, style="Form.TLabel").grid(row=0, column=0, padx=(0, 7))
         ttk.Label(
@@ -328,6 +336,44 @@ class CompactWindow(tk.Toplevel):
         self.update_topmost_button()
         self.refresh()
 
+    def _mount_mui_workspace(self) -> bool:
+        """Mount the React/MUI compact surface, retaining Tk as a fallback."""
+
+        if not getattr(self.app, "_mui_requested", False):
+            return False
+        try:
+            from presentation.mui.workspace import MuiWorkspace
+
+            self._mui_workspace = MuiWorkspace(self, self.app, mode="compact")
+            self._mui_workspace.pack(fill="both", expand=True)
+            self._mui_workspace.set_page_active(not self._start_hidden)
+            # Scanner/import callbacks already write to the main status token.
+            # Sharing it gives the MUI footer immediate feedback without
+            # duplicating sensitive status state in the embedded page.
+            self.status_var = self.app.status_var
+            return True
+        except Exception:
+            self._mui_workspace = None
+            return False
+
+    def process_mui_requests(self) -> None:
+        """Let the main Tk event loop dispatch compact bridge commands."""
+
+        if self._mui_workspace is not None:
+            self._mui_workspace.process_requests()
+
+    def close_mui_workspace(self) -> None:
+        """Release the compact WebView2 profile before destroying its Toplevel."""
+
+        if self._mui_workspace is None:
+            return
+        workspace, self._mui_workspace = self._mui_workspace, None
+        workspace.close()
+
+    def destroy(self) -> None:
+        self.close_mui_workspace()
+        super().destroy()
+
     def _close_application(self) -> None:
         """关闭轻量窗口时退出程序，并由主窗口保存当前模式。"""
 
@@ -336,14 +382,54 @@ class CompactWindow(tk.Toplevel):
     def update_topmost_button(self) -> None:
         """根据主窗口共享的置顶状态刷新按钮视觉样式。"""
 
+        if self._mui_workspace is not None:
+            return
         self.topmost_button.configure(
             text="置顶",
             style="TopmostOn.TButton" if self.app.window_on_top else "TopmostOff.TButton",
         )
 
+    def present_in_foreground(self) -> None:
+        """显示轻量窗并短暂提升层级，避免切换时被其他窗口遮住。
+
+        Windows 对刚从隐藏主窗口创建的 Toplevel 不一定自动授予前台层级。先临时
+        置顶可可靠地将用户主动打开的窗口带到前面，随后恢复用户原有的置顶偏好，
+        不会意外把普通轻量窗变成常驻置顶窗口。
+        """
+
+        preferred_topmost = bool(self.app.window_on_top)
+        workspace = getattr(self, "_mui_workspace", None)
+        if workspace is not None:
+            workspace.set_page_active(True)
+        self.deiconify()
+        self.attributes("-topmost", True)
+        self.lift()
+        try:
+            self.focus_force()
+        except tk.TclError:
+            # 失焦的窗口在销毁边缘可能拒绝焦点请求，但仍必须恢复置顶偏好。
+            pass
+
+        def restore_preference() -> None:
+            if not self.winfo_exists():
+                return
+            self.attributes("-topmost", preferred_topmost)
+            self.lift()
+
+        self.after(160, restore_preference)
+
+    def hide_for_full_mode(self) -> None:
+        """Hide the reusable compact surface without tearing down WebView2."""
+
+        if self._mui_workspace is not None:
+            self._mui_workspace.set_page_active(False)
+        self.withdraw()
+
     def refresh(self) -> None:
         """更新账号列表；倒计时刷新只改行文本并保留滚动位置。"""
 
+        if self._mui_workspace is not None:
+            return
         self.app._sync_view_model()
         recent = self.app.compact_view_model.recent_entries()
         next_order = tuple(entry.id for entry in recent)
@@ -367,11 +453,13 @@ class CompactWindow(tk.Toplevel):
             if row is None:
                 row = CompactAccountRow(self.accounts_frame, self, self.dpi_context)
                 self.account_rows[entry.id] = row
+            code = self._code_for_entry(entry, now)
+            display_code = code if self.app.settings.otp_codes_visible or code == "密钥无效" else "••••••"
             if row.entry is None or row.entry.id != entry.id:
-                row.set_entry(entry, self._code_for_entry(entry, now))
+                row.set_entry(entry, display_code)
             else:
                 row.entry = entry
-                row.update_code(self._code_for_entry(entry, now))
+                row.update_code(display_code)
             row.set_highlighted(entry.id in self._highlighted_entry_ids)
             row.grid(row=index, column=0, sticky="ew", pady=(0, self.dpi_context.dp(5)))
         for entry_id, row in self.account_rows.items():
@@ -409,6 +497,9 @@ class CompactWindow(tk.Toplevel):
     def highlight_accounts(self, entry_ids: list[str] | tuple[str, ...] | set[str]) -> None:
         """高亮刚扫码新增且当前可见的账号，五秒后原位恢复普通边框。"""
 
+        if self._mui_workspace is not None:
+            self._mui_workspace.bridge.highlight_accounts(entry_ids)
+            return
         if self._highlight_after_id is not None:
             try:
                 self.after_cancel(self._highlight_after_id)

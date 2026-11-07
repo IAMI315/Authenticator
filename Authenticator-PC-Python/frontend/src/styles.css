@@ -1,0 +1,9 @@
+:root {
+  color: #17233a;
+  background: #eef5fa;
+  font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
+}
+
+html, body, #root { width: 100%; min-width: 0; height: 100%; margin: 0; overflow: hidden; }
+* { box-sizing: border-box; }
+button, input, textarea { font: inherit; }

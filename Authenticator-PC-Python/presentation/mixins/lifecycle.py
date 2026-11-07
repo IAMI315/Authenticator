@@ -119,6 +119,8 @@ class LifecycleMixin(WindowMixin):
                 self.api_service,
                 self.api_token,
                 on_error=self._set_api_error,
+                scan_request_handler=self.api_scan_coordinator.start,
+                scan_canceller=self.api_scan_coordinator.cancel,
             )
             self.api_endpoint = self.api_controller.endpoint
             self._start_local_api()
@@ -188,8 +190,7 @@ class LifecycleMixin(WindowMixin):
         enabled = bool(enabled)
         if enabled == self.compact_mode and (not enabled or self.compact_window is not None):
             if enabled and self.compact_window is not None:
-                self.compact_window.deiconify()
-                self.compact_window.lift()
+                self.compact_window.present_in_foreground()
             return
         if enabled:
             # 进入轻量模式时隐藏根窗口，子 Toplevel 才是用户可见窗口。
@@ -210,25 +211,27 @@ class LifecycleMixin(WindowMixin):
                 self.settings.compact_mode = False
                 return
             self.attributes("-topmost", self.window_on_top)
+            if getattr(self, "mui_workspace", None) is not None:
+                self.mui_workspace.deactivate()
             self.withdraw()
-            self.compact_window = CompactWindow(self)
-            self.compact_window.attributes("-topmost", self.window_on_top)
-            self.compact_window.deiconify()
-            self.compact_window.lift()
+            if self.compact_window is None:
+                self.compact_window = CompactWindow(self)
+            self.compact_window.present_in_foreground()
             return
 
         if self.compact_window is not None:
             try:
-                self.compact_window.destroy()
+                self.compact_window.hide_for_full_mode()
             except tk.TclError:
                 pass
-            self.compact_window = None
         self.compact_mode = False
         self.settings.compact_mode = False
         self.deiconify()
         if self._compact_normal_geometry:
             self.geometry(self.dpi_context.physical_geometry(self._compact_normal_geometry))
         self.attributes("-topmost", self.window_on_top)
+        if getattr(self, "mui_workspace", None) is not None:
+            self.mui_workspace.activate()
         try:
             self._persist_settings()
         except VaultError:
@@ -301,14 +304,21 @@ class LifecycleMixin(WindowMixin):
         return self.api_controller.status_text() if self.api_controller is not None else "未启动"
 
     def _process_api_requests(self) -> None:
-        """每 50ms 在 Tk 主线程处理一小批 API 队列消息。"""
+        """快速处理 UI/API 命令；SSH 数据流不经过此队列。"""
 
         if self._closing:
             return
         if self.api_controller is not None:
             self.api_controller.process()
+        if getattr(self, "mui_workspace", None) is not None:
+            self.mui_workspace.process_requests()
+        if self.compact_window is not None:
+            self.compact_window.process_mui_requests()
         if not self._closing:
-            self.after(50, self._process_api_requests)
+            # The loopback MUI bridge uses this queue only for UI-owned state
+            # and vault changes. A short interval makes actions such as opening
+            # a terminal immediate without polling terminal bytes on Tk.
+            self.after(10, self._process_api_requests)
 
     def _process_background_tasks(self) -> None:
         """每 50ms 在 Tk 主线程执行后台任务完成回调。"""
@@ -337,6 +347,12 @@ class LifecycleMixin(WindowMixin):
         self._save_window_size(force=True)
         if self.api_controller is not None:
             self.api_controller.stop()
+        self.ssh_sessions.close_all()
+        compact_window = getattr(self, "compact_window", None)
+        if compact_window is not None:
+            compact_window.close_mui_workspace()
+        if getattr(self, "mui_workspace", None) is not None:
+            self.mui_workspace.close()
         self.background_tasks.close()
         self.destroy()
 
@@ -356,9 +372,9 @@ class LifecycleMixin(WindowMixin):
             timeout = self.settings.autolock_minutes * 60
             if time.monotonic() - self.last_activity >= timeout:
                 self.lock_vault(auto_locked=True)
-        if not self.locked:
+        if not self.locked and not self._mui_surface_active():
             self._update_visible_rows()
-        elif self.compact_window is not None:
+        elif self.compact_window is not None and not self._mui_surface_active():
             self.compact_window.refresh()
         self.after(1_000, self._tick)
 

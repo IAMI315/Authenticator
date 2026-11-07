@@ -36,6 +36,8 @@ class ApiRouter:
         if method == "POST":
             if parsed.path == f"{LOCAL_API_BASE_PATH}/accounts":
                 return ApiRoute("create_account", requires_json_body=True)
+            if parsed.path == f"{LOCAL_API_BASE_PATH}/accounts/scan":
+                return ApiRoute("scan_add", requires_json_body=True)
             return 404, {"error": "not_found"}
         return 405, {"error": "method_not_allowed"}
 
@@ -53,6 +55,10 @@ class ApiRouter:
             query = parse_qs(query_string, keep_blank_values=True)
             payload = {key: values[-1] for key, values in query.items() if values}
             return ApiRoute("get_secret", payload)
+        if path == f"{LOCAL_API_BASE_PATH}/accounts/code":
+            query = parse_qs(query_string, keep_blank_values=True)
+            payload = {key: values[-1] for key, values in query.items() if values}
+            return ApiRoute("get_code", payload)
 
         # ID 放在路径段中时需要先 URL 解码，才能与保险库中的原始 ID 比较。
         prefix = f"{LOCAL_API_BASE_PATH}/accounts/"
@@ -61,4 +67,9 @@ class ApiRouter:
             account_id = unquote(path[len(prefix) : -len(suffix)]).strip()
             if account_id:
                 return ApiRoute("get_secret", {"id": account_id})
+        code_suffix = "/code"
+        if path.startswith(prefix) and path.endswith(code_suffix):
+            account_id = unquote(path[len(prefix) : -len(code_suffix)]).strip()
+            if account_id:
+                return ApiRoute("get_code", {"id": account_id})
         return 404, {"error": "not_found"}

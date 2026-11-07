@@ -24,6 +24,7 @@ from domain.passwords import (
     PasswordGroup,
 )
 from domain.validators import format_created_at
+from infrastructure.service_catalog import service_metadata_for
 
 
 class VaultView(Protocol):
@@ -88,6 +89,8 @@ class NavigationItem:
     icon_key: str
     section: str
     scope: NavigationScope
+    brand_key: str | None = None
+    official_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -217,9 +220,17 @@ class MainViewModel:
             key for key, _count in sorted(counts.items(), key=lambda item: (-item[1], labels[item[0]].casefold()))[:provider_limit]
         )
         for key in top_keys:
+            service = service_metadata_for(labels[key])
             items.append(
                 NavigationItem(
-                    f"provider:{key}", labels[key], counts[key], key, "providers", ProviderScope(key, labels[key])
+                    f"provider:{key}",
+                    labels[key],
+                    counts[key],
+                    service.local_icon_name if service else key,
+                    "providers",
+                    ProviderScope(key, labels[key]),
+                    service.key if service else None,
+                    service.official_url if service else None,
                 )
             )
         other_count = sum(1 for entry in entries if _provider_key(entry.title) not in top_keys)
@@ -438,6 +449,7 @@ class PasswordViewModel:
         self.scope: NavigationScope = AllScope("全部密码")
         self.locked = False
         self.revealed_entry_id: str | None = None
+        self.passwords_visible = False
         self.sort_spec = DEFAULT_PASSWORD_SORT
         self.show_pinned = True
 
@@ -468,6 +480,10 @@ class PasswordViewModel:
 
     def set_show_pinned(self, show_pinned: bool) -> None:
         self.show_pinned = bool(show_pinned)
+
+    def set_passwords_visible(self, visible: bool) -> None:
+        self.passwords_visible = bool(visible)
+        self.revealed_entry_id = None
 
     def group_choices(self) -> list[PasswordGroupChoice]:
         return [
@@ -506,9 +522,17 @@ class PasswordViewModel:
             key for key, _count in sorted(counts.items(), key=lambda item: (-item[1], labels[item[0]].casefold()))[:provider_limit]
         )
         for key in top_keys:
+            service = service_metadata_for(labels[key])
             items.append(
                 NavigationItem(
-                    f"provider:{key}", labels[key], counts[key], key, "providers", ProviderScope(key, labels[key])
+                    f"provider:{key}",
+                    labels[key],
+                    counts[key],
+                    service.local_icon_name if service else key,
+                    "providers",
+                    ProviderScope(key, labels[key]),
+                    service.key if service else None,
+                    service.official_url if service else None,
                 )
             )
         other_count = sum(1 for entry in entries if _provider_key(entry.name) not in top_keys)
@@ -565,7 +589,8 @@ class PasswordViewModel:
         )
 
     def row(self, entry: PasswordEntry) -> PasswordRow:
-        password = entry.password if entry.id == self.revealed_entry_id else MASKED_PASSWORD
+        visible = self.passwords_visible != (entry.id == self.revealed_entry_id)
+        password = entry.password if visible else MASKED_PASSWORD
         return PasswordRow(
             entry.title,
             entry.username,

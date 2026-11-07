@@ -48,6 +48,7 @@ class VaultControlsMixin(WindowMixin):
 
         if self.locked:
             return
+        self.ssh_sessions.close_all()
         self.vault_service.lock()
         self.locked = True
         self._storage_load_kind = StorageLoadKind.NEEDS_PASSWORD
@@ -90,6 +91,8 @@ class VaultControlsMixin(WindowMixin):
         value = SettingsDialog.ask(
             self,
             self.settings.autolock_minutes,
+            self.settings.otp_codes_visible,
+            self.settings.passwords_visible,
             self.data_directory,
             self.api_endpoint,
             self.api_token,
@@ -97,15 +100,17 @@ class VaultControlsMixin(WindowMixin):
         )
         if value is None:
             return
-        self.settings.autolock_minutes = value
+        previous = (self.settings.autolock_minutes, self.settings.otp_codes_visible, self.settings.passwords_visible)
+        self.settings.autolock_minutes, self.settings.otp_codes_visible, self.settings.passwords_visible = value
         try:
             self._persist_settings()
         except VaultError as error:
+            self.settings.autolock_minutes, self.settings.otp_codes_visible, self.settings.passwords_visible = previous
             messagebox.showerror(APP_NAME, str(error), parent=self)
             return
         self.last_activity = time.monotonic()
         self.refresh_tree()
-        status = "已关闭自动锁定。" if value == 0 else f"保险库将在闲置 {value} 分钟后自动锁定。"
+        status = "已关闭自动锁定。" if value[0] == 0 else f"保险库将在闲置 {value[0]} 分钟后自动锁定。"
         self._show_status(status)
 
     def show_about(self) -> None:
@@ -135,8 +140,14 @@ class VaultControlsMixin(WindowMixin):
             "列出分组及账号数量。\n\n"
             "GET /v1/accounts/{id}/secret\n"
             "读取指定账号的密钥。\n\n"
+            "GET /v1/accounts/{id}/code\n"
+            "读取指定账号的当前验证码；也可用 issuer/account 查询。\n\n"
             "POST /v1/accounts\n"
             "新增账号；可选 group_ids 指定已有分组。\n\n"
-            "所有 API 请求必须带 X-Authenticator-Token 请求头；服务仅监听本机，保险库锁定时不会返回账号或密钥。",
+            "POST /v1/accounts/scan\n"
+            "拉起桌面扫码流程，自动识别屏幕二维码，未识别到时允许框选；"
+            "完成入库后返回结果。可选 group_ids 指定已有分组。\n\n"
+            "所有 API 请求必须带 X-Authenticator-Token 请求头；服务仅监听本机，"
+            "保险库锁定时不会返回账号、验证码或密钥。",
             parent=self,
         )

@@ -86,6 +86,8 @@ def test_json_settings_repository_recovers_defaults_from_corrupt_file(tmp_path):
     assert settings.window_size == "960x640"
     assert settings.always_on_top is False
     assert settings.compact_clipboard == ""
+    assert settings.otp_codes_visible is True
+    assert settings.passwords_visible is True
 
 
 def test_json_settings_repository_round_trips_valid_sorting_and_rejects_unknown_values(tmp_path):
@@ -98,6 +100,8 @@ def test_json_settings_repository_round_trips_valid_sorting_and_rejects_unknown_
     settings.password_sort_direction = "descending"
     settings.otp_show_pinned = False
     settings.password_show_pinned = True
+    settings.otp_codes_visible = False
+    settings.passwords_visible = False
     repository.save(settings)
 
     loaded = repository.create()
@@ -106,6 +110,8 @@ def test_json_settings_repository_round_trips_valid_sorting_and_rejects_unknown_
     assert (loaded.password_sort_field, loaded.password_sort_direction) == ("url", "descending")
     assert loaded.otp_show_pinned is False
     assert loaded.password_show_pinned is True
+    assert loaded.otp_codes_visible is False
+    assert loaded.passwords_visible is False
 
     document = json.loads(path.read_text(encoding="utf-8"))
     document["otp_sort_field"] = "code"
@@ -114,6 +120,8 @@ def test_json_settings_repository_round_trips_valid_sorting_and_rejects_unknown_
     repository.load(loaded)
     assert (loaded.otp_sort_field, loaded.otp_sort_direction) == ("created", "ascending")
     assert (loaded.password_sort_field, loaded.password_sort_direction) == ("url", "descending")
+    assert loaded.otp_codes_visible is False
+    assert loaded.passwords_visible is False
 
 
 def test_legacy_sensitive_settings_are_loaded_for_migration_then_scrubbed(tmp_path):

@@ -20,6 +20,7 @@ from infrastructure.api_router import LOCAL_API_BASE_PATH, ApiRoute, ApiRouter
 LOCAL_API_HOST = "127.0.0.1"
 LOCAL_API_PORT = 8765
 LOCAL_API_MAX_BODY_BYTES = 256 * 1024
+LOCAL_API_SCAN_TIMEOUT_SECONDS = 180
 
 
 class _LocalThreadingHttpServer(ThreadingHTTPServer):
@@ -114,8 +115,9 @@ class LocalApiServer:
                 # HTTP 工作线程只等待队列结果，不能访问 Tk 或保险库对象。
                 response: queue.Queue[ApiResponse] = queue.Queue(maxsize=1)
                 service.request_queue.put(ApiRequest(action, payload, response))
+                timeout = LOCAL_API_SCAN_TIMEOUT_SECONDS if action == "scan_add" else 10
                 try:
-                    status, document = response.get(timeout=10)
+                    status, document = response.get(timeout=timeout)
                 except queue.Empty:
                     self._write_json(503, {"error": "application_busy"})
                     return

@@ -62,6 +62,8 @@ class PasswordController:
     def refresh(self) -> None:
         if self.workspace is None:
             return
+        if self.view_model.passwords_visible != self.app.settings.passwords_visible:
+            self.view_model.set_passwords_visible(self.app.settings.passwords_visible)
         scope = self.view_model.scope
         if isinstance(scope, GroupScope) and self.app.vault.password_group_by_id(scope.group_id) is None:
             scope = AllScope("全部密码")

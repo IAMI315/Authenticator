@@ -20,7 +20,13 @@ from application.password_commands import CreatePasswordCommand, UpdatePasswordC
 from application.password_group_service import PasswordGroupService
 from application.password_search_service import PasswordSearchService
 from application.password_service import PasswordService
+from application.provider_filters import (
+    build_provider_filter_catalog,
+    normalise_provider_key,
+)
 from application.search_service import SearchService
+from application.server_commands import CreateServerCommand, UpdateServerCommand
+from application.server_service import ServerService
 from application.sorting import parse_otp_sort, parse_password_sort
 from application.storage_service import StorageService
 from domain.entities import DEFAULT_GROUP_ID, DEFAULT_GROUP_NAME, OTPEntry
@@ -30,6 +36,7 @@ from domain.passwords import (
     PasswordGeneratorOptions,
     generate_password,
 )
+from domain.servers import ServerAuthKind, ServerProfile, TrustedHostKey
 from domain.validators import utc_now_iso
 from infrastructure.backup_codec import BackupCodec
 from infrastructure.vault_repository import JsonVaultRepository
@@ -96,6 +103,7 @@ class MobileFacade:
         self.password_search = PasswordSearchService()
         self.passwords = PasswordService(self.vault, self._save, self.password_search)
         self.password_groups = PasswordGroupService(self.vault, self._save)
+        self.servers = ServerService(self.vault, self._save)
         self.importer = ImportService(self.vault, self._save, utc_now_iso)
         self.backup_files = MemoryBackupStore()
         self.backup = BackupService(
@@ -150,12 +158,28 @@ class MobileFacade:
         password_favorite_only: bool = False,
         account_show_pinned: bool = True,
         password_show_pinned: bool = True,
+        account_provider_key: str = "",
+        account_other_providers_only: bool = False,
     ) -> str:
         if self._locked:
             return _json({"locked": True, "accounts": [], "passwords": []})
         entries = list(self.vault.entries)
+        provider_catalog = build_provider_filter_catalog(entries, lambda entry: entry.title)
         if account_group_id:
             entries = [entry for entry in entries if account_group_id in entry.group_ids]
+        selected_provider_key = normalise_provider_key(account_provider_key)
+        if selected_provider_key:
+            entries = [
+                entry
+                for entry in entries
+                if normalise_provider_key(entry.title) == selected_provider_key
+            ]
+        elif account_other_providers_only:
+            entries = [
+                entry
+                for entry in entries
+                if normalise_provider_key(entry.title) not in provider_catalog.top_keys
+            ]
         if pinned_only:
             entries = [entry for entry in entries if entry.pinned]
         if account_favorite_only:
@@ -184,8 +208,14 @@ class MobileFacade:
                 "locked": False,
                 "accounts": [self._account_row(entry) for entry in entries],
                 "groups": [group.to_dict() for group in self.vault.groups],
+                "account_providers": [
+                    {"key": provider.key, "label": provider.label, "count": provider.count}
+                    for provider in provider_catalog.providers
+                ],
+                "other_provider_count": provider_catalog.other_count,
                 "passwords": [self._password_row(entry) for entry in password_entries],
                 "password_groups": [group.to_dict() for group in self.vault.password_groups],
+                "servers": [self._server_row(profile) for profile in self.servers.list()],
             }
         )
 
@@ -198,7 +228,19 @@ class MobileFacade:
             code = "------"
             error = str(exc)
         return {
-            **entry.to_dict(),
+            "id": entry.id,
+            "issuer": entry.issuer,
+            "account": entry.account,
+            "otp_type": entry.otp_type,
+            "counter": entry.counter,
+            "period": entry.period,
+            "digits": entry.digits,
+            "algorithm": entry.algorithm,
+            "secret_encoding": entry.secret_encoding,
+            "favorite": entry.favorite,
+            "pinned": entry.pinned,
+            "created_at": entry.created_at,
+            "group_ids": list(entry.group_ids),
             "code": code,
             "remaining": entry.remaining_seconds(),
             "type_label": entry.type_label,
@@ -213,12 +255,150 @@ class MobileFacade:
             "title": entry.title,
             "username": entry.username,
             "url": entry.url,
-            "notes": entry.notes,
             "favorite": entry.favorite,
             "pinned": entry.pinned,
             "created_at": entry.created_at,
             "group_ids": list(entry.group_ids),
         }
+
+    @staticmethod
+    def _server_row(profile: ServerProfile) -> dict[str, Any]:
+        """Return only metadata that is safe to render in the Android UI."""
+
+        trusted_key = profile.trusted_host_key
+        return {
+            "id": profile.id,
+            "name": profile.name,
+            "host": profile.host,
+            "port": profile.port,
+            "username": profile.username,
+            "auth_kind": profile.auth_kind.value,
+            "credentials_configured": profile.credentials_configured,
+            "notes": profile.notes,
+            "trusted_fingerprint": trusted_key.fingerprint if trusted_key else "",
+            "trusted_algorithm": trusted_key.algorithm if trusted_key else "",
+            "created_at": profile.created_at,
+            "updated_at": profile.updated_at,
+        }
+
+    def _require_unlocked(self) -> None:
+        if self._locked:
+            raise ValueError("请先解锁保险库")
+
+    @staticmethod
+    def _server_command(data: dict[str, Any], *, update: bool) -> CreateServerCommand | UpdateServerCommand:
+        try:
+            auth_kind = ServerAuthKind(str(data.get("auth_kind", ServerAuthKind.PASSWORD)))
+        except ValueError as error:
+            raise ValueError("不支持的 SSH 认证方式") from error
+        values = {
+            "name": str(data.get("name") or ""),
+            "host": str(data.get("host", data.get("ip", "")) or ""),
+            "port": data.get("port", 22),
+            "username": str(data.get("username") or ""),
+            "auth_kind": auth_kind,
+            "password": str(data.get("password") or ""),
+            "private_key": str(data.get("private_key") or ""),
+            "private_key_passphrase": str(data.get("private_key_passphrase") or ""),
+            "notes": str(data.get("notes") or ""),
+        }
+        if update:
+            return UpdateServerCommand(
+                **values,
+                replace_credentials=bool(data.get("replace_credentials", False)),
+            )
+        return CreateServerCommand(**values)
+
+    def get_server(self, profile_id: str) -> str:
+        self._require_unlocked()
+        return _json(self._server_row(self.servers.get(profile_id)))
+
+    def get_server_connection(self, profile_id: str) -> str:
+        """Provide one profile to the native SSH worker only when connecting.
+
+        This is deliberately separate from ``snapshot`` and never saved by the
+        Kotlin UI. The response includes credentials only for the short-lived
+        background connection setup.
+        """
+
+        self._require_unlocked()
+        profile = self.servers.get(profile_id)
+        profile.require_credentials()
+        return _json(profile.to_dict())
+
+    def create_server(self, raw: str) -> str:
+        self._require_unlocked()
+        profile = self.servers.create(self._server_command(_payload(raw), update=False))
+        return _json(self._server_row(profile))
+
+    def update_server(self, raw: str) -> str:
+        self._require_unlocked()
+        data = _payload(raw)
+        profile_id = str(data.get("id") or "")
+        if not profile_id:
+            raise ValueError("服务器标识无效")
+        profile = self.servers.update(profile_id, self._server_command(data, update=True))
+        return _json(self._server_row(profile))
+
+    def delete_server(self, profile_id: str) -> str:
+        self._require_unlocked()
+        self.servers.delete(profile_id)
+        return _json({"deleted": True})
+
+    def trust_server_host_key(self, raw: str) -> str:
+        self._require_unlocked()
+        data = _payload(raw)
+        profile_id = str(data.get("profile_id") or "")
+        trusted_key = TrustedHostKey(
+            str(data.get("algorithm") or ""),
+            str(data.get("key_data") or ""),
+        )
+        return _json(self._server_row(self.servers.set_trusted_host_key(profile_id, trusted_key)))
+
+    def reset_server_host_key(self, profile_id: str) -> str:
+        self._require_unlocked()
+        return _json(self._server_row(self.servers.reset_trusted_host_key(profile_id)))
+
+    def otp_dynamic_values(self) -> str:
+        """Return only fields which change as a TOTP period advances.
+
+        The Compose client calls this once per second.  Keeping this payload
+        separate from ``snapshot`` avoids rebuilding password rows, group
+        lists, and static account metadata on every tick.
+        """
+
+        if self._locked:
+            return _json({"locked": True, "values": []})
+
+        values: list[dict[str, Any]] = []
+        for entry in self.vault.entries:
+            try:
+                code = entry.code()
+                error = ""
+            except ValueError as exc:
+                code = "------"
+                error = str(exc)
+            values.append(
+                {
+                    "id": entry.id,
+                    "code": code,
+                    "remaining": entry.remaining_seconds(),
+                    "error": error,
+                }
+            )
+        return _json({"locked": False, "values": values})
+
+    def get_account(self, entry_id: str) -> str:
+        entry = next((item for item in self.vault.entries if item.id == entry_id), None)
+        if entry is None:
+            raise ValueError("验证码账号不存在")
+        return _json(entry.to_dict())
+
+    def export_account_uri(self, entry_id: str) -> str:
+        entry = next((item for item in self.vault.entries if item.id == entry_id), None)
+        if entry is None:
+            raise ValueError("验证码账号不存在")
+        return entry.to_uri()
 
     def get_password(self, entry_id: str) -> str:
         entry = next((item for item in self.vault.password_entries if item.id == entry_id), None)

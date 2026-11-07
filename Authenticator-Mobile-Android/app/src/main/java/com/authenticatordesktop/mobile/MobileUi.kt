@@ -46,6 +46,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Sort
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material.icons.rounded.Computer
 import androidx.compose.material.icons.rounded.ChevronLeft
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.Delete
@@ -129,6 +130,7 @@ import org.json.JSONObject
 private enum class MobileModule(val label: String, val icon: ImageVector) {
     OTP("验证码", Icons.Rounded.Key),
     PASSWORDS("密码本", Icons.Rounded.Password),
+    SERVERS("服务器", Icons.Rounded.Computer),
     SETTINGS("设置", Icons.Rounded.Settings),
 }
 
@@ -143,12 +145,18 @@ fun AuthenticatorMobileApp(viewModel: AppViewModel) {
     var showNewAccount by remember { mutableStateOf(false) }
     var passwordEditor by remember { mutableStateOf<JSONObject?>(null) }
     var showNewPassword by remember { mutableStateOf(false) }
+    var serverEditor by remember { mutableStateOf<JSONObject?>(null) }
+    var showNewServer by remember { mutableStateOf(false) }
+    var deleteServer by remember { mutableStateOf<ServerRow?>(null) }
+    var privateKeyReceiver by remember { mutableStateOf<((String) -> Unit)?>(null) }
     var assignmentAccount by remember { mutableStateOf<AccountRow?>(null) }
     var assignmentPassword by remember { mutableStateOf<PasswordRow?>(null) }
     var changeMasterPassword by remember { mutableStateOf(false) }
     var showScanner by remember { mutableStateOf(false) }
+    var showUriImport by remember { mutableStateOf(false) }
     var pendingImport by remember { mutableStateOf<String?>(null) }
     var pendingExport by remember { mutableStateOf<String?>(null) }
+    var accountUri by remember { mutableStateOf<String?>(null) }
     var revealedPassword by remember { mutableStateOf<Pair<String, String>?>(null) }
     var deleteAccountId by remember { mutableStateOf<String?>(null) }
     var deletePasswordId by remember { mutableStateOf<String?>(null) }
@@ -184,6 +192,15 @@ fun AuthenticatorMobileApp(viewModel: AppViewModel) {
     val cameraPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) showScanner = true else notify("需要相机权限才能扫码")
     }
+    val openPrivateKey = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        val receiver = privateKeyReceiver
+        privateKeyReceiver = null
+        uri ?: return@rememberLauncherForActivityResult
+        val content = context.contentResolver.openInputStream(uri)?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }
+        if (content.isNullOrBlank()) notify("无法读取私钥文件")
+        else if (content.toByteArray(Charsets.UTF_8).size > 65_536) notify("私钥文件不能超过 64 KB")
+        else receiver?.invoke(content)
+    }
 
     LaunchedEffect(viewModel) {
         viewModel.events.collectLatest { event ->
@@ -213,7 +230,7 @@ fun AuthenticatorMobileApp(viewModel: AppViewModel) {
                         title = {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.primaryContainer) {
-                                    Icon(Icons.Rounded.Shield, null, tint = AccentBlue, modifier = Modifier.padding(9.dp).size(23.dp))
+                                    AppIcon(Modifier.size(41.dp))
                                 }
                                 Spacer(Modifier.width(10.dp))
                                 Column {
@@ -256,6 +273,7 @@ fun AuthenticatorMobileApp(viewModel: AppViewModel) {
                             icon = { Icon(Icons.Rounded.Add, null) },
                             text = { Text("新增密码") },
                         )
+                        MobileModule.SERVERS -> Unit
                         MobileModule.SETTINGS -> Unit
                     }
                 },
@@ -266,7 +284,8 @@ fun AuthenticatorMobileApp(viewModel: AppViewModel) {
                             state,
                             viewModel,
                             copy = ::copy,
-                            edit = { accountEditor = it.raw },
+                            edit = { row -> viewModel.getAccount(row.id) { accountEditor = it } },
+                            showUri = { row -> viewModel.exportAccountUri(row.id) { accountUri = it } },
                             assign = { assignmentAccount = it },
                             requestDelete = { deleteAccountId = it.id },
                             assignSelected = { assignSelectedAccounts = true },
@@ -283,6 +302,13 @@ fun AuthenticatorMobileApp(viewModel: AppViewModel) {
                             assignSelected = { assignSelectedPasswords = true },
                             deleteSelected = { deleteSelectedPasswords = true },
                         )
+                        MobileModule.SERVERS -> ServerScreen(
+                            state = state,
+                            viewModel = viewModel,
+                            onCreate = { showNewServer = true },
+                            onEdit = { row -> viewModel.getServer(row.id) { serverEditor = it } },
+                            onDelete = { deleteServer = it },
+                        )
                         MobileModule.SETTINGS -> SettingsScreen(
                             autoLock = viewModel.autoLockMinutes(),
                             onAutoLock = viewModel::setAutoLockMinutes,
@@ -292,6 +318,7 @@ fun AuthenticatorMobileApp(viewModel: AppViewModel) {
                             onPasswordSort = viewModel::setPasswordSort,
                             onChangePassword = { changeMasterPassword = true },
                             onImport = { openDocument.launch(arrayOf("application/json", "application/octet-stream", "text/plain")) },
+                            onImportUri = { showUriImport = true },
                             onGoogleExport = { confirmGoogleExport = true },
                             onExport = { encrypted ->
                                 if (!encrypted) {
@@ -326,6 +353,18 @@ fun AuthenticatorMobileApp(viewModel: AppViewModel) {
         },
         onClose = { showScanner = false },
     )
+    if (showUriImport) UriImportDialog(
+        onClose = { showUriImport = false },
+        onImport = { uri ->
+            showUriImport = false
+            viewModel.processQrPayload(uri) { parsed ->
+                if (parsed != null) {
+                    accountEditor = parsed
+                    showNewAccount = true
+                }
+            }
+        },
+    )
     if (showNewAccount || accountEditor != null) AccountEditorDialog(
         initial = accountEditor,
         groups = state.snapshot.groups,
@@ -344,6 +383,24 @@ fun AuthenticatorMobileApp(viewModel: AppViewModel) {
             val id = passwordEditor?.optString("id").orEmpty()
             if (id.isBlank()) viewModel.createPassword(data) else viewModel.updatePassword(id, data)
             showNewPassword = false; passwordEditor = null
+        },
+    )
+    if (showNewServer || serverEditor != null) ServerEditorDialog(
+        initial = serverEditor,
+        onPickPrivateKey = { receiver ->
+            privateKeyReceiver = receiver
+            openPrivateKey.launch(arrayOf("application/octet-stream", "text/plain", "application/x-pem-file", "*/*"))
+        },
+        onClose = {
+            privateKeyReceiver = null
+            showNewServer = false
+            serverEditor = null
+        },
+        onSave = { data ->
+            if (data.optString("id").isBlank()) viewModel.createServer(data) else viewModel.updateServer(data)
+            privateKeyReceiver = null
+            showNewServer = false
+            serverEditor = null
         },
     )
     assignmentAccount?.let { item ->
@@ -381,6 +438,9 @@ fun AuthenticatorMobileApp(viewModel: AppViewModel) {
     revealedPassword?.let { (title, password) ->
         SecretDialog(title, password, { revealedPassword = null }) { copy("密码", password) }
     }
+    accountUri?.let { uri ->
+        SecretDialog("otpauth URI", uri, { accountUri = null }) { copy("URI", uri) }
+    }
     deleteAccountId?.let { id ->
         ConfirmDialog("删除验证码账号？", "此操作会从本机保险库永久删除该账号。", { deleteAccountId = null }) {
             viewModel.deleteAccount(id); deleteAccountId = null
@@ -389,6 +449,16 @@ fun AuthenticatorMobileApp(viewModel: AppViewModel) {
     deletePasswordId?.let { id ->
         ConfirmDialog("删除密码记录？", "此操作会从本机保险库永久删除该密码记录。", { deletePasswordId = null }) {
             viewModel.deletePassword(id); deletePasswordId = null
+        }
+    }
+    deleteServer?.let { profile ->
+        ConfirmDialog(
+            "删除服务器？",
+            "将删除“${profile.name}”及其中保存的认证资料，并断开相关 SSH 终端。",
+            { deleteServer = null },
+        ) {
+            viewModel.deleteServer(profile.id)
+            deleteServer = null
         }
     }
     if (deleteSelectedAccounts) {
@@ -437,7 +507,7 @@ private fun PrivacyShield() = Box(
     contentAlignment = Alignment.Center,
 ) {
     Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Icon(Icons.Rounded.Shield, null, tint = AccentBlue, modifier = Modifier.size(52.dp))
+        AppIcon(Modifier.size(52.dp))
         Text("验证器", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
         Text("敏感内容已隐藏", color = TextMuted)
     }
@@ -456,7 +526,7 @@ private fun SecurityScreen(title: String, subtitle: String, confirm: Boolean, su
         ) {
             Column(Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 Surface(shape = RoundedCornerShape(18.dp), color = MaterialTheme.colorScheme.primaryContainer) {
-                    Icon(Icons.Rounded.Shield, null, tint = AccentBlue, modifier = Modifier.padding(15.dp).size(38.dp))
+                    AppIcon(Modifier.size(68.dp))
                 }
                 Text(title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
                 Text(subtitle, color = TextMuted)
@@ -489,13 +559,42 @@ private fun FilterRow(
     onGroup: (String) -> Unit,
     onFavorite: (Boolean) -> Unit,
     onShowPinned: (Boolean) -> Unit,
+    providers: List<ProviderFilterRow> = emptyList(),
+    selectedProviderKey: String = "",
+    otherProvidersOnly: Boolean = false,
+    onProvider: (String) -> Unit = {},
+    onOtherProviders: () -> Unit = {},
+    otherProviderCount: Int = 0,
 ) {
-    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(vertical = 2.dp)) {
-        item { FilterChip(selected = selected.isBlank(), onClick = { onGroup("") }, label = { Text("全部") }) }
-        item { FilterChip(selected = favoriteOnly, onClick = { onFavorite(!favoriteOnly) }, leadingIcon = { Icon(Icons.Rounded.Star, null, Modifier.size(17.dp)) }, label = { Text("收藏") }) }
-        item { FilterChip(selected = showPinned, onClick = { onShowPinned(!showPinned) }, leadingIcon = { Icon(Icons.Rounded.PushPin, null, Modifier.size(17.dp)) }, label = { Text("置顶可见") }) }
-        items(groups.filterNot { it.id == "default" || it.id == "password-default" }) { group ->
-            FilterChip(selected = selected == group.id, onClick = { onGroup(if (selected == group.id) "" else group.id) }, label = { Text(group.name) })
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(vertical = 2.dp)) {
+            item { FilterChip(selected = selected.isBlank(), onClick = { onGroup("") }, label = { Text("全部") }) }
+            item { FilterChip(selected = favoriteOnly, onClick = { onFavorite(!favoriteOnly) }, leadingIcon = { Icon(Icons.Rounded.Star, null, Modifier.size(17.dp)) }, label = { Text("收藏") }) }
+            item { FilterChip(selected = showPinned, onClick = { onShowPinned(!showPinned) }, leadingIcon = { Icon(Icons.Rounded.PushPin, null, Modifier.size(17.dp)) }, label = { Text("置顶可见") }) }
+            items(groups.filterNot { it.id == "default" || it.id == "password-default" }) { group ->
+                FilterChip(selected = selected == group.id, onClick = { onGroup(if (selected == group.id) "" else group.id) }, label = { Text(group.name) })
+            }
+        }
+        if (providers.isNotEmpty() || otherProviderCount > 0) {
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(vertical = 2.dp)) {
+                item { Text("服务商", style = MaterialTheme.typography.labelMedium, color = TextMuted, modifier = Modifier.padding(top = 8.dp, end = 2.dp)) }
+                items(providers, key = { it.key }) { provider ->
+                    FilterChip(
+                        selected = selectedProviderKey == provider.key,
+                        onClick = { onProvider(provider.key) },
+                        label = { Text("${provider.label} ${provider.count}") },
+                    )
+                }
+                if (otherProviderCount > 0) {
+                    item {
+                        FilterChip(
+                            selected = otherProvidersOnly,
+                            onClick = onOtherProviders,
+                            label = { Text("其他服务商 $otherProviderCount") },
+                        )
+                    }
+                }
+            }
         }
     }
 }
@@ -506,6 +605,7 @@ private fun OtpScreen(
     viewModel: AppViewModel,
     copy: (String, String) -> Unit,
     edit: (AccountRow) -> Unit,
+    showUri: (AccountRow) -> Unit,
     assign: (AccountRow) -> Unit,
     requestDelete: (AccountRow) -> Unit,
     assignSelected: () -> Unit,
@@ -522,6 +622,12 @@ private fun OtpScreen(
             viewModel::setAccountGroup,
             viewModel::setAccountFavoriteOnly,
             viewModel::setAccountShowPinned,
+            state.snapshot.accountProviders,
+            state.accountProviderKey,
+            state.accountOtherProvidersOnly,
+            viewModel::setAccountProvider,
+            viewModel::setOtherAccountProvidersOnly,
+            state.snapshot.otherProviderCount,
         )
         if (state.selectedAccountIds.isNotEmpty()) {
             SelectionActionBar(
@@ -547,6 +653,7 @@ private fun OtpScreen(
                     item,
                     copy,
                     { edit(item) },
+                    { showUri(item) },
                     { assign(item) },
                     { viewModel.setAccountFavorite(item.id, !item.favorite) },
                     { viewModel.toggleAccountPinned(item.id) },
@@ -566,6 +673,7 @@ private fun OtpCard(
     item: AccountRow,
     copy: (String, String) -> Unit,
     edit: () -> Unit,
+    showUri: () -> Unit,
     assign: () -> Unit,
     favorite: () -> Unit,
     pin: () -> Unit,
@@ -594,7 +702,14 @@ private fun OtpCard(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(item.issuer.ifBlank { "未命名服务" }, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
-                Text(item.account.ifBlank { "未填写账号" }, color = TextMuted, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
+                Text(
+                    item.account.ifBlank { "未填写账号" },
+                    modifier = Modifier.clickable(enabled = item.account.isNotBlank()) { copy("账号", item.account) },
+                    color = TextMuted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.bodySmall,
+                )
                 Text(
                     item.code.chunked(3).joinToString(" "),
                     modifier = Modifier.clip(RoundedCornerShape(6.dp)).clickable { copy("验证码", item.code) }.padding(vertical = 3.dp),
@@ -624,6 +739,7 @@ private fun OtpCard(
                 DropdownMenu(menu, { menu = false }) {
                     DropdownMenuItem({ Text("复制账号") }, { menu = false; copy("账号", item.account) }, leadingIcon = { Icon(Icons.Rounded.ContentCopy, null) })
                     DropdownMenuItem({ Text("编辑") }, { menu = false; edit() }, leadingIcon = { Icon(Icons.Rounded.Edit, null) })
+                    DropdownMenuItem({ Text("查看 URI") }, { menu = false; showUri() }, leadingIcon = { Icon(Icons.Rounded.ContentCopy, null) })
                     DropdownMenuItem({ Text("分组") }, { menu = false; assign() }, leadingIcon = { Icon(Icons.Rounded.Folder, null) })
                     DropdownMenuItem({ Text(if (item.favorite) "取消收藏" else "收藏") }, { menu = false; favorite() }, leadingIcon = { Icon(Icons.Rounded.Star, null) })
                     DropdownMenuItem({ Text(if (item.pinned) "取消置顶" else "置顶") }, { menu = false; pin() }, leadingIcon = { Icon(Icons.Rounded.PushPin, null) })
@@ -726,7 +842,13 @@ private fun PasswordCard(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(item.title, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
-                Text(item.username, color = TextMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    item.username,
+                    modifier = Modifier.clickable { copy("用户名", item.username) },
+                    color = TextMuted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
                 Text("••••••••••••", modifier = Modifier.clickable { copyPassword() }, color = SoftPurple, letterSpacing = 1.sp)
             }
             if (!selectionMode) Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -743,7 +865,7 @@ private fun PasswordCard(
                 DropdownMenu(menu, { menu = false }) {
                     DropdownMenuItem({ Text("复制密码") }, { menu = false; copyPassword() }, leadingIcon = { Icon(Icons.Rounded.ContentCopy, null) })
                     DropdownMenuItem({ Text("显示密码") }, { menu = false; reveal() })
-                    if (item.url.isNotBlank()) DropdownMenuItem({ Text("打开网站") }, {
+                    if (isSafeWebUrl(item.url)) DropdownMenuItem({ Text("打开网站") }, {
                         menu = false
                         context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(item.url)))
                     })
@@ -799,6 +921,7 @@ private fun SettingsScreen(
     onPasswordSort: (PasswordSortPreference) -> Unit,
     onChangePassword: () -> Unit,
     onImport: () -> Unit,
+    onImportUri: () -> Unit,
     onGoogleExport: () -> Unit,
     onExport: (Boolean) -> Unit,
     groups: List<GroupRow>,
@@ -837,6 +960,7 @@ private fun SettingsScreen(
         } }
         item { SettingsSection("备份与迁移") {
             SettingsAction(Icons.Rounded.FileUpload, "导入数据", "自动识别加密备份、JSON 和 URI", onImport)
+            SettingsAction(Icons.Rounded.QrCodeScanner, "粘贴 otpauth URI", "直接导入单条验证码或 Google 迁移 URI", onImportUri)
             SettingsAction(Icons.Rounded.FileDownload, "加密备份", "推荐，跨设备时使用主密码恢复") { onExport(true) }
             SettingsAction(Icons.Rounded.FileDownload, "明文 JSON", "文件将直接包含密钥和密码") { onExport(false) }
             SettingsAction(
@@ -853,7 +977,7 @@ private fun SettingsScreen(
             GroupQuickManager(passwordGroups, "password-default", passwordGroupName, { passwordGroupName = it }, { viewModel.createPasswordGroup(passwordGroupName); passwordGroupName = "" }, viewModel::renamePasswordGroup, viewModel::deletePasswordGroup)
         } }
         item { SettingsSection("关于") {
-            Text("验证器 1.4.5", fontWeight = FontWeight.SemiBold)
+            Text("验证器 1.4.20", fontWeight = FontWeight.SemiBold)
             Text("离线生成验证码并管理本地密码。数据不会上传云端。", color = TextMuted, style = MaterialTheme.typography.bodySmall)
         } }
     }
@@ -881,6 +1005,11 @@ private fun SettingsScreen(
             },
         )
     }
+}
+
+private fun isSafeWebUrl(value: String): Boolean {
+    val scheme = runCatching { Uri.parse(value).scheme?.lowercase() }.getOrNull()
+    return scheme == "http" || scheme == "https"
 }
 
 @Composable

@@ -28,6 +28,8 @@ class PythonGateway(context: Context) {
         passwordShowPinned: Boolean,
         accountSort: AccountSortPreference,
         passwordSort: PasswordSortPreference,
+        accountProviderKey: String,
+        accountOtherProvidersOnly: Boolean,
     ) = call(
         "snapshot",
         accountQuery,
@@ -43,8 +45,13 @@ class PythonGateway(context: Context) {
         passwordFavoriteOnly,
         accountShowPinned,
         passwordShowPinned,
+        accountProviderKey,
+        accountOtherProvidersOnly,
     )
+    fun otpDynamicValues() = call("otp_dynamic_values")
     fun processQrPayload(uri: String) = call("process_qr_payload", uri)
+    fun getAccount(id: String) = call("get_account", id)
+    fun exportAccountUri(id: String) = call("export_account_uri", id)
     fun createAccount(json: String) = call("create_account", json)
     fun updateAccount(json: String) = call("update_account", json)
     fun deleteAccounts(ids: String) = call("delete_accounts", ids)
@@ -66,6 +73,13 @@ class PythonGateway(context: Context) {
     fun renamePasswordGroup(id: String, name: String) = call("rename_password_group", id, name)
     fun deletePasswordGroup(id: String) = call("delete_password_group", id)
     fun assignPasswordGroups(ids: String, groups: String) = call("assign_password_groups", ids, groups)
+    fun getServer(id: String) = call("get_server", id)
+    fun getServerConnection(id: String) = call("get_server_connection", id)
+    fun createServer(json: String) = call("create_server", json)
+    fun updateServer(json: String) = call("update_server", json)
+    fun deleteServer(id: String) = call("delete_server", id)
+    fun trustServerHostKey(json: String) = call("trust_server_host_key", json)
+    fun resetServerHostKey(id: String) = call("reset_server_host_key", id)
     fun generatePassword(json: String) = call("generate_password", json)
     fun exportGoogleAuthenticator() = call("export_google_authenticator")
     fun exportBackup(encrypted: Boolean) = call("export_backup", encrypted)

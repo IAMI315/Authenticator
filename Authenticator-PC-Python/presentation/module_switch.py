@@ -1,4 +1,4 @@
-"""验证码与密码本共用的双分段滑块控件。"""
+"""经典回退界面的验证码与密码本分段滑块控件。"""
 
 from __future__ import annotations
 
@@ -20,10 +20,11 @@ PASSWORD_FILL = "#DDF3FF"
 PASSWORD_BORDER = "#8FD4F7"
 PASSWORD_TEXT = "#0879B8"
 FOCUS_BORDER = "#72A7E8"
+MODULES: tuple[ModuleName, ...] = ("otp", "passwords")
 
 
 class ModuleSegmentedSwitch(tk.Canvas):
-    """单一控件内的两段模块开关，支持鼠标和键盘操作。"""
+    """单一控件内的三段模块开关，支持鼠标和键盘操作。"""
 
     def __init__(
         self,
@@ -48,8 +49,8 @@ class ModuleSegmentedSwitch(tk.Canvas):
         self.bind("<Leave>", self._on_leave)
         self.bind("<FocusIn>", lambda _event: self._draw())
         self.bind("<FocusOut>", lambda _event: self._draw())
-        self.bind("<Left>", lambda _event: self._activate("otp"))
-        self.bind("<Right>", lambda _event: self._activate("passwords"))
+        self.bind("<Left>", lambda _event: self._move(-1))
+        self.bind("<Right>", lambda _event: self._move(1))
         self.bind("<Home>", lambda _event: self._activate("otp"))
         self.bind("<End>", lambda _event: self._activate("passwords"))
         self.bind("<space>", self._toggle_from_keyboard)
@@ -67,17 +68,19 @@ class ModuleSegmentedSwitch(tk.Canvas):
     def invalidate_scale(self) -> None:
         """DPI 变化时重新计算固定逻辑尺寸并重绘。"""
 
-        self._width = self.dpi_context.dp(168)
+        self._width = self.dpi_context.dp(178)
         self._height = self.dpi_context.dp(38)
         self.configure(width=self._width, height=self._height)
         self._draw()
 
     def _on_click(self, event: tk.Event[tk.Misc]) -> str:
         self.focus_set()
-        return self._activate("otp" if event.x < self._width / 2 else "passwords")
+        index = min(len(MODULES) - 1, max(0, int(event.x / (self._width / len(MODULES)))))
+        return self._activate(MODULES[index])
 
     def _on_motion(self, event: tk.Event[tk.Misc]) -> None:
-        hovered: ModuleName = "otp" if event.x < self._width / 2 else "passwords"
+        index = min(len(MODULES) - 1, max(0, int(event.x / (self._width / len(MODULES)))))
+        hovered = MODULES[index]
         if hovered != self._hovered:
             self._hovered = hovered
             self._draw()
@@ -88,8 +91,11 @@ class ModuleSegmentedSwitch(tk.Canvas):
             self._draw()
 
     def _toggle_from_keyboard(self, _event: tk.Event[tk.Misc]) -> str:
-        target: ModuleName = "passwords" if self.active == "otp" else "otp"
-        return self._activate(target)
+        return self._move(1)
+
+    def _move(self, direction: int) -> str:
+        index = MODULES.index(self.active)
+        return self._activate(MODULES[(index + direction) % len(MODULES)])
 
     def _activate(self, module: ModuleName) -> str:
         if module != self.active:
@@ -115,11 +121,15 @@ class ModuleSegmentedSwitch(tk.Canvas):
         )
 
         gap = self.dpi_context.dp(3)
-        half = self._width / 2
-        selected_left = gap if self.active == "otp" else half
-        selected_right = half if self.active == "otp" else self._width - gap
-        selected_fill = OTP_FILL if self.active == "otp" else PASSWORD_FILL
-        selected_border = OTP_BORDER if self.active == "otp" else PASSWORD_BORDER
+        segment = self._width / len(MODULES)
+        active_index = MODULES.index(self.active)
+        selected_left = active_index * segment + gap
+        selected_right = (active_index + 1) * segment - gap
+        fills = {"otp": OTP_FILL, "passwords": PASSWORD_FILL}
+        borders = {"otp": OTP_BORDER, "passwords": PASSWORD_BORDER}
+        texts = {"otp": OTP_TEXT, "passwords": PASSWORD_TEXT}
+        selected_fill = fills[self.active]
+        selected_border = borders[self.active]
         self._rounded_rectangle(
             selected_left,
             gap,
@@ -132,15 +142,19 @@ class ModuleSegmentedSwitch(tk.Canvas):
             tags=("selection",),
         )
 
-        otp_color = OTP_TEXT if self.active == "otp" else TEXT_MUTED
-        password_color = PASSWORD_TEXT if self.active == "passwords" else TEXT_MUTED
-        if self._hovered == "otp" and self.active != "otp":
-            otp_color = "#365A67"
-        if self._hovered == "passwords" and self.active != "passwords":
-            password_color = "#365A67"
+        colors = {module: texts[module] if self.active == module else TEXT_MUTED for module in MODULES}
+        if self._hovered is not None and self.active != self._hovered:
+            colors[self._hovered] = "#365A67"
         font = (UI_FONT, 9, "bold")
-        self.create_text(half / 2, self._height / 2, text="验证码", fill=otp_color, font=font)
-        self.create_text(half + half / 2, self._height / 2, text="密码本", fill=password_color, font=font)
+        labels = {"otp": "验证码", "passwords": "密码本"}
+        for index, module in enumerate(MODULES):
+            self.create_text(
+                index * segment + segment / 2,
+                self._height / 2,
+                text=labels[module],
+                fill=colors[module],
+                font=font,
+            )
 
     def _rounded_rectangle(
         self,

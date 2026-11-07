@@ -12,6 +12,7 @@ from application.import_export import ImportBundle
 from domain.entities import AccountGroup, OTPEntry
 from domain.identifiers import account_identity
 from domain.passwords import PasswordEntry, PasswordGroup, password_identity
+from domain.servers import ServerProfile
 
 
 @dataclass(frozen=True)
@@ -22,6 +23,8 @@ class ImportResult:
     passwords_added: int = 0
     password_groups_added: int = 0
     password_duplicates_skipped: int = 0
+    servers_added: int = 0
+    server_duplicates_skipped: int = 0
 
 
 class ImportService:
@@ -41,18 +44,23 @@ class ImportService:
         groups: Sequence[AccountGroup],
         password_entries: Sequence[PasswordEntry] = (),
         password_groups: Sequence[PasswordGroup] = (),
+        server_profiles: Sequence[ServerProfile] = (),
     ) -> ImportResult:
         original_entries = deepcopy(self.vault.entries)
         original_groups = deepcopy(self.vault.groups)
         original_password_entries = deepcopy(self.vault.password_entries)
         original_password_groups = deepcopy(self.vault.password_groups)
+        original_server_profiles = deepcopy(self.vault.server_profiles)
         imported_at = self._now_factory()
         existing_accounts = {account_identity(entry) for entry in self.vault.entries}
         existing_passwords = {password_identity(entry) for entry in self.vault.password_entries}
         used_account_ids = {entry.id for entry in self.vault.entries}
         used_password_ids = {entry.id for entry in self.vault.password_entries}
+        existing_servers = {profile.connection_identity for profile in self.vault.server_profiles}
+        used_server_ids = {profile.id for profile in self.vault.server_profiles}
         account_duplicates = 0
         password_duplicates = 0
+        server_duplicates = 0
         try:
             group_mapping = self.vault.merge_imported_groups(deepcopy(list(groups)))
             password_group_mapping = self.vault.merge_imported_password_groups(
@@ -97,11 +105,28 @@ class ImportService:
                 existing_passwords.add(password_key)
                 used_password_ids.add(password_entry.id)
 
+            accepted_servers: list[ServerProfile] = []
+            for profile in deepcopy(list(server_profiles)):
+                profile.validate()
+                if profile.connection_identity in existing_servers:
+                    server_duplicates += 1
+                    continue
+                if profile.id in used_server_ids:
+                    profile.id = str(uuid.uuid4())
+                if not profile.created_at:
+                    profile.created_at = imported_at
+                if not profile.updated_at:
+                    profile.updated_at = profile.created_at
+                accepted_servers.append(profile)
+                existing_servers.add(profile.connection_identity)
+                used_server_ids.add(profile.id)
+
             groups_added = len(self.vault.groups) - len(original_groups)
             password_groups_added = len(self.vault.password_groups) - len(original_password_groups)
             self.vault.entries.extend(accepted_accounts)
             self.vault.password_entries.extend(accepted_passwords)
-            if accepted_accounts or groups_added or accepted_passwords or password_groups_added:
+            self.vault.server_profiles.extend(accepted_servers)
+            if accepted_accounts or groups_added or accepted_passwords or password_groups_added or accepted_servers:
                 self._save()
             return ImportResult(
                 len(accepted_accounts),
@@ -110,12 +135,15 @@ class ImportService:
                 len(accepted_passwords),
                 password_groups_added,
                 password_duplicates,
+                len(accepted_servers),
+                server_duplicates,
             )
         except Exception:
             self.vault.entries = original_entries
             self.vault.groups = original_groups
             self.vault.password_entries = original_password_entries
             self.vault.password_groups = original_password_groups
+            self.vault.server_profiles = original_server_profiles
             raise
 
     def import_bundle(self, bundle: ImportBundle) -> ImportResult:
@@ -124,4 +152,5 @@ class ImportService:
             bundle.otp_groups,
             bundle.password_entries,
             bundle.password_groups,
+            bundle.server_profiles,
         )

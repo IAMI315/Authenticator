@@ -21,12 +21,13 @@ class PasswordSearchService:
         sort_spec: PasswordSortSpec | None = None,
     ) -> list[PasswordEntry]:
         terms = tuple(_normalise(query).split())
-        matched = [
-            entry
-            for entry in entries
-            if not terms
-            or all(term in _normalise(" ".join((entry.name, entry.username, entry.url, entry.notes))) for term in terms)
-        ]
+        matched = []
+        for entry in entries:
+            # A multi-word query must not repeatedly normalize potentially
+            # large notes for the same record during interactive searching.
+            haystack = _normalise(" ".join((entry.name, entry.username, entry.url, entry.notes)))
+            if not terms or all(term in haystack for term in terms):
+                matched.append(entry)
         if sort_spec is not None:
             return sort_password_entries(matched, sort_spec)
         return sorted(
