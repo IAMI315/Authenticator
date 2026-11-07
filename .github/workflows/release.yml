@@ -40,9 +40,14 @@ jobs:
       - name: Install Python dependencies
         run: python -m pip install --upgrade pip; python -m pip install -r requirements.txt
 
+      - name: Install frontend dependencies from lockfile
+        working-directory: Authenticator-PC-Python/frontend
+        run: npm ci --no-audit --no-fund
+
       - name: Build the EXE and run the packaged checks
         env:
           PYTHONUTF8: '1'
+          AUTHENTICATOR_SKIP_NPM_INSTALL: '1'
         run: python build_exe.py
 
       - name: Create desktop checksums
@@ -83,14 +88,17 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
       - name: Install Android build tools
         shell: pwsh
         run: |
-          sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
-          "sdk.dir=$env:ANDROID_SDK_ROOT" | Out-File -Encoding ascii local.properties
+          $androidHome = $env:ANDROID_HOME
+          if ([string]::IsNullOrWhiteSpace($androidHome)) { $androidHome = $env:ANDROID_SDK_ROOT }
+          if ([string]::IsNullOrWhiteSpace($androidHome)) { $androidHome = 'C:\Android\android-sdk' }
+          $sdkManager = Get-ChildItem -LiteralPath $androidHome -Filter sdkmanager.bat -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($null -eq $sdkManager) { throw "sdkmanager.bat was not found under $androidHome" }
+          & $sdkManager.FullName 'platforms;android-35' 'build-tools;35.0.0'
+          if ($LASTEXITCODE -ne 0) { throw "Android SDK package installation failed with exit code $LASTEXITCODE" }
+          "sdk.dir=$($androidHome.Replace('\','/'))" | Out-File -Encoding ascii local.properties
 
       - name: Build and test the APK
         env:
